@@ -11,7 +11,7 @@
     Warto zobaczyć:
     - [Limitations of Interpretable Machine Learning Methods](https://compstat-lmu.github.io/iml_methods_limitations/)
 
-* 2020-03-06 - OpenML - wybór i wstępna analiza zbiorów danych
+* 2020-03-06 - OpenML - wybór i analiza zbiorów danych
 
     Warto zobaczyć:
     - [Stop Explaining Black Box Machine Learning Models for High Stakes Decisions and Use Interpretable Models Instead](https://arxiv.org/pdf/1811.10154.pdf)
