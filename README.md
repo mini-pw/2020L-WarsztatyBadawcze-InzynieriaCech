@@ -16,15 +16,15 @@
     Warto zobaczyć:
     - [Stop Explaining Black Box Machine Learning Models for High Stakes Decisions and Use Interpretable Models Instead](https://arxiv.org/pdf/1811.10154.pdf)
    
-* 2020-03-13 - interpretowalne modele
+* 2020-03-13 - prezentacje
 
 * 2020-03-20 - prezentacje 
 
-* 2020-03-27 - prezentacje 
+* 2020-03-27 - praca domowa 1
 
-* 2020-04-03 - praca domowa 1
+* 2020-04-03 - praca domowa 2
 
-* 2020-04-17 - praca domowa 2
+* 2020-04-17 - projekt
 
 * 2020-04-24 - projekt
 
