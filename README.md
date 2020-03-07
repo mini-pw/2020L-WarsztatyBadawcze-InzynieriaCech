@@ -16,7 +16,10 @@
     Warto zobaczyć:
     - [Stop Explaining Black Box Machine Learning Models for High Stakes Decisions and Use Interpretable Models Instead](https://arxiv.org/pdf/1811.10154.pdf)
    
-* 2020-03-13 - prezentacje
+* 2020-03-13 - prezentacje:
+
+1. Problem klasyfikacji dla klas uporządkowanych: Saputa, Wachulec, Wichrowska
+
 
 * 2020-03-20 - prezentacje 
 
