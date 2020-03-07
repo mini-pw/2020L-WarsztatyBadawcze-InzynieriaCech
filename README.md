@@ -19,7 +19,8 @@
 * 2020-03-13 - prezentacje:
 
 1. Problem klasyfikacji dla klas uporządkowanych: Saputa, Wachulec, Wichrowska
-2. GBM:
+2. GBM: Wojciech Bogucki, Tomasz Makowski, Dominik Rafacz
+
 
 * 2020-03-20 - prezentacje 
 
