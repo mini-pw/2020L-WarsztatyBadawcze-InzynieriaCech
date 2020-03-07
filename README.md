@@ -20,7 +20,7 @@
 
 1. Problem klasyfikacji dla klas uporządkowanych: Saputa, Wachulec, Wichrowska
 2. GBM: Wojciech Bogucki, Tomasz Makowski, Dominik Rafacz
-
+3. Metody imputacji danych: Bakala, Pastuszka, Pysiak
 
 * 2020-03-20 - prezentacje 
 
