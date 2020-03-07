@@ -18,9 +18,10 @@
    
 * 2020-03-13 - prezentacje:
 
-1. Problem klasyfikacji dla klas uporządkowanych: Saputa, Wachulec, Wichrowska
+1. Problem klasyfikacji dla klas uporządkowanych: Karol Saputa, Małgorzata Wachulec, Aleksandra Wichrowska
 2. GBM: Wojciech Bogucki, Tomasz Makowski, Dominik Rafacz
-3. Metody imputacji danych: Bakala, Pastuszka, Pysiak
+3. Metody imputacji danych: Mateusz Bakala, Michał Pastuszka, Karol Pysiak
+4. randomForest: Bartłomiej Granat, Szymon Maksymiuk
 
 * 2020-03-20 - prezentacje 
 
