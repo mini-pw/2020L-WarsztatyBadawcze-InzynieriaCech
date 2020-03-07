@@ -53,17 +53,17 @@
 * 2020-06-05 - ?
 
 ## Prezentacje (15 pkt.)
-Należy przygotować prezentację o wybranym modelu ML, tzw "czarnej skrzynce". 
+
+Należy przygotować prezentację na jeden z uzgodnionych tematów.
 
 ## Prace domowe (15 pkt.)
 
 ### Praca domowa 1 
 
-
 ### Praca domowa 2
 
-
 ## Projekt (55 pkt.)
+
 Celem projektu jest zbudowanie jak najlepszego interpretowalnego modelu oraz porównanie go z modelem czarnej skrzynki.
 
 Rezultatem prac powinien być krótki artykuł naukowy (40 pkt.), minimum 3 strony umieszczony jako rozdział książki online, która powstanie w ramach przedmiotu. Podział punktów w ramach artykułu
@@ -73,7 +73,6 @@ Rezultatem prac powinien być krótki artykuł naukowy (40 pkt.), minimum 3 stro
 * Wnioski: 10 pkt.
 
 Projekt nalezy zaprezentować w postaci Lightning Talka na jednym z ostatnich wykładów (15 pkt.).
-
 
 ## Blog (15 pkt.)
 Informacje w [repzytorium Wykładu](https://github.com/mini-pw/2020L-WarsztatyBadawcze)
