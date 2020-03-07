@@ -23,7 +23,10 @@
 3. Metody imputacji danych: Mateusz Bakala, Michał Pastuszka, Karol Pysiak
 4. randomForest: Bartłomiej Granat, Szymon Maksymiuk
 
-* 2020-03-20 - prezentacje 
+* 2020-03-20 - prezentacje:
+
+5.  XAI: Wojciech Kretowicz, Łukasz Brzozowski, Kacper Siemaszko
+
 
 * 2020-03-27 - praca domowa 1
 
