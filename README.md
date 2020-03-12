@@ -21,20 +21,18 @@
 1. Problem klasyfikacji dla klas uporządkowanych: Karol Saputa, Małgorzata Wachulec, Aleksandra Wichrowska
 2. GBM: Wojciech Bogucki, Tomasz Makowski, Dominik Rafacz
 3. Metody imputacji danych: Mateusz Bakala, Michał Pastuszka, Karol Pysiak
+
+* 2020-03-20 i 2020-03-27 - prezentacje zdalnie przez Google Hangouts:
+
 4. randomForest: Bartłomiej Granat, Szymon Maksymiuk
-
-* 2020-03-20 - prezentacje zdalnie przez Google Hangouts:
-
 5. XAI: Wojciech Kretowicz, Łukasz Brzozowski, Kacper Siemaszko
 6. SAFE/modelStudio: Hubert Baniecki, Mateusz Polakowski
 7. XGboost: Rydelek, Merkel, Stawikowski
 8. Prezentacja artykułu: https://arxiv.org/pdf/1811.10154.pdf: Olaf Werner, Bogdan Jastrzębski
 
-* 2020-03-27 - praca domowa 1
+* 2020-04-03 - praca domowa 1
 
-* 2020-04-03 - praca domowa 2
-
-* 2020-04-17 - projekt
+* 2020-04-17 - praca domowa 2
 
 * 2020-04-24 - projekt
 
