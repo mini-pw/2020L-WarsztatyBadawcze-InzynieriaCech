@@ -16,7 +16,7 @@
     Warto zobaczyć:
     - [Stop Explaining Black Box Machine Learning Models for High Stakes Decisions and Use Interpretable Models Instead](https://arxiv.org/pdf/1811.10154.pdf)
    
-* 2020-03-13 - prezentacje zdalnie przez Google Hangouts https://hangouts.google.com/call/2Je-8-IQ2UJ055XJ3gfwAEEI :
+* 2020-03-13 - prezentacje zdalnie przez Google Hangouts https://us04web.zoom.us/j/536186047?pwd=WHZuTUhiQzRxUXFXWG9oQXNtR1lTdz09 :
 
 1. Problem klasyfikacji dla klas uporządkowanych: Karol Saputa, Małgorzata Wachulec, Aleksandra Wichrowska
 2. GBM: Wojciech Bogucki, Tomasz Makowski, Dominik Rafacz
