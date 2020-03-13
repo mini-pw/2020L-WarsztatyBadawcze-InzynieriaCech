@@ -16,18 +16,21 @@
     Warto zobaczyć:
     - [Stop Explaining Black Box Machine Learning Models for High Stakes Decisions and Use Interpretable Models Instead](https://arxiv.org/pdf/1811.10154.pdf)
    
-* 2020-03-13 - prezentacje zdalnie przez Google Hangouts https://us04web.zoom.us/j/536186047?pwd=WHZuTUhiQzRxUXFXWG9oQXNtR1lTdz09 :
+* 2020-03-13 - prezentacje zdalnie:
 
 1. Problem klasyfikacji dla klas uporządkowanych: Karol Saputa, Małgorzata Wachulec, Aleksandra Wichrowska
 2. GBM: Wojciech Bogucki, Tomasz Makowski, Dominik Rafacz
 3. Metody imputacji danych: Mateusz Bakala, Michał Pastuszka, Karol Pysiak
 
-* 2020-03-20 i 2020-03-27 - prezentacje zdalnie przez Google Hangouts:
+* 2020-03-20 prezentacje zdalnie przez Zoom: 
 
 4. randomForest: Bartłomiej Granat, Szymon Maksymiuk
 5. XAI: Wojciech Kretowicz, Łukasz Brzozowski, Kacper Siemaszko
-6. SAFE/modelStudio: Hubert Baniecki, Mateusz Polakowski
-7. XGboost: Rydelek, Merkel, Stawikowski
+6. XGboost: Rydelek, Merkel, Stawikowski
+
+* 2020-03-27 - prezentacje zdalnie:
+
+7. SAFE/modelStudio: Hubert Baniecki, Mateusz Polakowski
 8. Prezentacja artykułu: https://arxiv.org/pdf/1811.10154.pdf: Olaf Werner, Bogdan Jastrzębski
 
 * 2020-04-03 - praca domowa 1
