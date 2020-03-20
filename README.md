@@ -77,7 +77,7 @@ W celu zbudowania bardzo dobrego modelu interpretowalnego powinna być zastosowa
 - wykorzystanie modelu czarnej skrzynki do budowy modelu interpretowalnego (np. PDP do transformacji zmiennych, metoda SAFE)
 
 W projekcie należy przedstawić kolejne kroki - historię pokazującą ile do wyniku modelu wniosła np. inżynieria cech, potem ile wniosła imputacja danych, itd... . 
-Na koniec powinno być zestawienie, że goły model interpretowalny ma wynik A%, automL B%, a kolejne wersje modeli interpretowalnego mają C%, D% i tak dalej.
+Na koniec powinno być zestawienie, że goły modelu interpretowalnego ma wynik A%, automL B%, a kolejne wersje modeli interpretowalnych mają C%, D% i tak dalej.
 
 Końcowy model interpretowalny powininen być przynajmniej tak dobry jak model czarnej skrzynki (automl). W artykule należy przedstawić etapy pracy nad modelami oraz ich porówanie (wybranymi miarami służacymi do oceny jakości modeli).
 
