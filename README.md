@@ -22,7 +22,7 @@
 2. GBM: Wojciech Bogucki, Tomasz Makowski, Dominik Rafacz
 3. Metody imputacji danych: Mateusz Bakala, Michał Pastuszka, Karol Pysiak
 
-* 2020-03-20 prezentacje zdalnie przez Zoom: 
+* 2020-03-20 prezentacje zdalnie przez Zoom: https://us04web.zoom.us/j/2254905395
 
 4. randomForest: Bartłomiej Granat, Szymon Maksymiuk
 5. XAI: Wojciech Kretowicz, Łukasz Brzozowski, Kacper Siemaszko
