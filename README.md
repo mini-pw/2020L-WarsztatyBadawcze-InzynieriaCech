@@ -69,13 +69,17 @@ Należy przygotować prezentację na jeden z uzgodnionych tematów.
 
 Celem projektu jest zbudowanie jak najlepszego interpretowalnego modelu oraz porównanie go z modelem czarnej skrzynki.
 W celu zbudowania bardzo dobrego modelu interpretowalnego powinna być zastosowana m.in.:
+- selekcja cech
 - inżynieria cech
 - transformacje zmiennych
 - analiza braków danych
 - wiedza ekspercka
 - wykorzystanie modelu czarnej skrzynki do budowy modelu interpretowalnego (np. PDP do transformacji zmiennych, metoda SAFE)
 
-Model interpretowalny powininen być przynajmniej tak dobry jak model czarnej skrzynki. W artykule należy przedstawić etapy pracy nad modelami oraz ich porówanie (wybranymi miarami służacymi do oceny jakości modeli).
+W projekcie należy przedstawić kolejne kroki - historię pokazującą ile do wyniku modelu wniosła np. inżynieria cech, potem ile wniosła imputacja danych, itd... . 
+Na koniec powinno być zestawienie, że goły model interpretowalny ma wynik A%, automL B%, a kolejne wersje modeli interpretowalnego mają C%, D% i tak dalej.
+
+Końcowy model interpretowalny powininen być przynajmniej tak dobry jak model czarnej skrzynki (automl). W artykule należy przedstawić etapy pracy nad modelami oraz ich porówanie (wybranymi miarami służacymi do oceny jakości modeli).
 
 Rezultatem prac powinien być krótki artykuł naukowy napisany w języku angielskim (40 pkt.), minimum 3 strony umieszczony jako rozdział książki online, która powstanie w ramach przedmiotu. Podział punktów w ramach artykułu
 * Abstrakt: 5 pkt.
