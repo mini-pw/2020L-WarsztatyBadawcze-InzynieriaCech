@@ -74,6 +74,7 @@ W celu zbudowania bardzo dobrego modelu interpretowalnego powinna być zastosowa
 - analiza braków danych
 - wiedza ekspercka
 - wykorzystanie modelu czarnej skrzynki do budowy modelu interpretowalnego (np. PDP do transformacji zmiennych, metoda SAFE)
+
 Model interpretowalny powininen być przynajmniej tak dobry jak model czarnej skrzynki. W artykule należy przedstawić etapy pracy nad modelami oraz ich porówanie (wybranymi miarami służacymi do oceny jakości modeli).
 
 Rezultatem prac powinien być krótki artykuł naukowy (40 pkt.), minimum 3 strony umieszczony jako rozdział książki online, która powstanie w ramach przedmiotu. Podział punktów w ramach artykułu
