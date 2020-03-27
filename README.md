@@ -28,7 +28,7 @@
 5. XAI: Wojciech Kretowicz, Łukasz Brzozowski, Kacper Siemaszko
 6. XGboost: Rydelek, Merkel, Stawikowski
 
-* 2020-03-27 - prezentacje zdalnie:
+* 2020-03-27 - prezentacje zdalnie: https://us04web.zoom.us/j/2254905395
 
 7. SAFE/modelStudio: Hubert Baniecki, Mateusz Polakowski
 8. Prezentacja artykułu: https://arxiv.org/pdf/1811.10154.pdf: Olaf Werner, Bogdan Jastrzębski
