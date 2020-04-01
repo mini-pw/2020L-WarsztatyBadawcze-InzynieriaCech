@@ -33,13 +33,13 @@
 7. SAFE/modelStudio: Hubert Baniecki, Mateusz Polakowski
 8. Prezentacja artykułu: https://arxiv.org/pdf/1811.10154.pdf: Olaf Werner, Bogdan Jastrzębski
 
-* 2020-04-03 - praca domowa 1
+* 2020-04-03 - problem niezbalansowanych klas + bookdown + praca domowa 1
 
-* 2020-04-17 - praca domowa 2
+* 2020-04-17 - prezentacja PD1 + praca domowa 2
 
 * 2020-04-24 - projekt
 
-* 2020-04-29 - projekt
+* 2020-04-29 - prezentacja PD2 + projekt
 
 * 2020-05-01 - projekt
 
