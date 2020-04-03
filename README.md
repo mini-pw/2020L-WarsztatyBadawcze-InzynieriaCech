@@ -63,6 +63,10 @@ Należy przygotować prezentację na jeden z uzgodnionych tematów.
 
 ### Praca domowa 1 
 
+* Pracę domową należy wykonać pojedynczo. Na podstawie zbioru danych „sick" dostępnych w zbiorze OpenML należy wykonać analizę eksploracyjną oraz zbudować interpretowalny model klasyfikacyjny przewidujący czy pacjent jest chory czy zdrowy. Powinna zostać użyta 5-krotna kroswalidacja i wyliczone dwie miary: AUC i AUPRC.
+
+* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa1/ImieNazwisko do 17.04 do godz. 10 oraz zaprezentowana (max. 10 minut) podczas zajęć 17.04. 
+
 ### Praca domowa 2
 
 ## Projekt (55 pkt.)
