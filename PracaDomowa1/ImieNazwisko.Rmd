@@ -1,0 +1,71 @@
+---
+title: "Sick dataset analysis"
+author: "Imię i nazwisko"
+date: "25 03 2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+
+```
+
+
+```{r data, include = FALSE}
+
+set.seed(10)
+
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+
+```
+
+```{r plot, warning=F}
+
+DataExplorer::plot_histogram(dataset_raw)
+
+DataExplorer::plot_bar(dataset_raw)
+
+```
+
+# Preprocessing
+
+```{r preprocessing, include = FALSE}
+
+dataset <- dataset_raw %>% 
+  # drop 'TBG' - it is an empty column:
+  select(-TBG)
+
+```
+
+```{r missings}
+
+gg_miss_var(dataset, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+
+# 80% train i 20% test data
+
+# cross-validation
+
+```
+
