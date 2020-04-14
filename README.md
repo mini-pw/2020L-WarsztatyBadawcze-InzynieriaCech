@@ -33,13 +33,13 @@
 7. SAFE/modelStudio: Hubert Baniecki, Mateusz Polakowski
 8. Prezentacja artykułu: https://arxiv.org/pdf/1811.10154.pdf: Olaf Werner, Bogdan Jastrzębski
 
-* 2020-04-03 - praca domowa 1
+* 2020-04-03 - problem niezbalansowanych klas + bookdown + praca domowa 1
 
-* 2020-04-17 - praca domowa 2
+* 2020-04-17 - prezentacja PD1 + praca domowa 2
 
 * 2020-04-24 - projekt
 
-* 2020-04-29 - projekt
+* 2020-04-29 - prezentacja PD2 + projekt
 
 * 2020-05-01 - projekt
 
@@ -62,6 +62,10 @@ Należy przygotować prezentację na jeden z uzgodnionych tematów.
 ## Prace domowe (15 pkt.)
 
 ### Praca domowa 1 
+
+* Pracę domową należy wykonać pojedynczo. Na podstawie zbioru danych „sick" dostępnych w zbiorze OpenML należy wykonać analizę eksploracyjną oraz zbudować interpretowalny model klasyfikacyjny przewidujący czy pacjent jest chory czy zdrowy. Powinna zostać użyta 5-krotna kroswalidacja i wyliczone dwie miary: AUC i AUPRC. Do podziału zbioru na zbiór treningowy i testowy, proszę użyć dostępnych indeksów zbioru treningowego w folderze 'Praca domowa 1'.
+
+* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa1/ImieNazwisko do 17.04 do godz. 10 oraz zaprezentowana (max. 10 minut) podczas zajęć 17.04. 
 
 ### Praca domowa 2
 
