@@ -35,7 +35,7 @@
 
 * 2020-04-03 - problem niezbalansowanych klas + bookdown + praca domowa 1
 
-* 2020-04-17 - prezentacja PD1 + praca domowa 2
+* 2020-04-17 - prezentacja PD1 + praca domowa 2: https://us04web.zoom.us/j/2254905395
 
 * 2020-04-24 - projekt
 
