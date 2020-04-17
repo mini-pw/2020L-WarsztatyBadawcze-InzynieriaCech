@@ -35,7 +35,7 @@
 
 * 2020-04-03 - problem niezbalansowanych klas + bookdown + praca domowa 1
 
-* 2020-04-17 - prezentacja PD1 + praca domowa 2
+* 2020-04-17 - prezentacja PD1 + praca domowa 2: https://us04web.zoom.us/j/2254905395
 
 * 2020-04-24 - projekt
 
@@ -65,9 +65,13 @@ Należy przygotować prezentację na jeden z uzgodnionych tematów.
 
 * Pracę domową należy wykonać pojedynczo. Na podstawie zbioru danych „sick" dostępnych w zbiorze OpenML należy wykonać analizę eksploracyjną oraz zbudować interpretowalny model klasyfikacyjny przewidujący czy pacjent jest chory czy zdrowy. Powinna zostać użyta 5-krotna kroswalidacja do znalezienia odpowiedniego modelu na zbiorze treningowym i wyliczone dwie miary na zbiorze testowym: AUC i AUPRC. Do podziału zbioru na zbiór treningowy i testowy, proszę użyć dostępnych indeksów zbioru treningowego w folderze 'Praca domowa 1'.
 
-* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa1/ImieNazwisko do 17.04 do godz. 10 oraz zaprezentowana (max. 10 minut) podczas zajęć 17.04. 
+* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa1/ImieNazwisko do 17.04 do godz. 10 oraz zaprezentowana (max. 5 minut) podczas zajęć 17.04. 
 
 ### Praca domowa 2
+
+* Pracę domową należy wykonać pojedynczo, praca jest kontynuacją pracy domowej 1. Należy dodać model czarnej skrzynki przewidujący czy pacjent jest chory czy zdrowy. Powinna zostać użyta 5-krotna kroswalidacja do znalezienia odpowiedniego modelu na zbiorze treningowym i wyliczone dwie miary na zbiorze testowym: AUC i AUPRC. Wyniki należy porównać z wynikami modelu z pracy domowej 1. Do podziału zbioru na zbiór treningowy i testowy, proszę użyć dostępnych indeksów zbioru treningowego w folderze 'Praca domowa 1'. 
+
+* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa2/ImieNazwisko do 29.04 do godz. 10 oraz zaprezentowana (max. 5 minut) podczas zajęć 29.04. 
 
 ## Projekt (55 pkt.)
 

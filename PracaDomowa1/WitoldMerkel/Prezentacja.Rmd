@@ -1,0 +1,151 @@
+---
+title: "PD 1"
+author: "Witold Merkel"
+date: "15 04 2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(mlr)
+library(PRROC)
+pred_c <- function(model, newdata){
+  pred <- predict(model, newdata = newdata)
+  prob <- getPredictionProbabilities(pred)
+  
+  fg <- prob[newdata[,"Class"] == 1]
+  bg <- prob[newdata[,"Class"] == 0]
+  
+  pr <-  pr.curve(scores.class0 = fg, scores.class1 = bg, curve = TRUE)
+  return (pr$auc.integral)
+}
+```
+
+
+```{r data, include = FALSE}
+set.seed(10)
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+```
+
+```{r plot, warning=F}
+DataExplorer::plot_histogram(dataset_raw)
+DataExplorer::plot_bar(dataset_raw)
+```
+
+# Preprocessing
+
+I tried different things to make my model a better one:
+
+* logaritmic transformation of selected columns,
+* getting rid of lines with missing elements,
+* different tyes of imputing missing data,
+* deleting columns.
+
+None of those things helped mi with my score, so I decided to only delete the empty column and the "hypopituitary" column.
+
+```{r preprocessing}
+dataset_raw <- dataset_raw %>% select(-c("TBG", "hypopituitary"))
+dataset_raw$Class <- as.factor(ifelse(dataset_raw$Class == 'sick', 1, 0))
+```
+
+```{r missings}
+gg_miss_var(dataset_raw, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+```
+
+# Dividing data
+
+Division that was given to us.
+
+```{r}
+index <- read.table("index.txt")$x
+train <- dataset_raw[index,]
+test <- dataset_raw[-index,]
+```
+
+# Basic model and its performance
+
+After running some test I decided to go for decision trees. I choose the mlr implementation with rpart.
+
+## AUC - 5 cv on traininng data 
+
+```{r basic_model}
+task <- mlr::makeClassifTask(id = "1", data = train, target = "Class", positive = "1")
+dec_tree <- mlr::makeLearner(cl = "classif.rpart", predict.type = "prob")
+
+rd <- makeResampleDesc("CV", iters=5)
+benchmark(learners = list(dec_tree), tasks = task, resamplings = rd, measures = auc)
+```
+
+## AUPRC - on test data
+
+```{r}
+model1 <- train(dec_tree, task)
+"AUPRC"
+pred_c(model1, test)
+```
+
+I think those scores aren't bad, but I would like to do something more, so it doesn't seem that I didn't do anything.
+
+# Tunning of the hyperparameters
+
+Here I would like to present my excellent model, which I got by tunning the parameters of a basic rpart model, with random search method, which is better than searching through grid.
+
+```{r super_model}
+params <- makeParamSet(
+  makeIntegerParam("minsplit", lower = 5, upper = 100),
+  makeIntegerParam("minbucket", lower = 2, upper = 100),
+  makeNumericParam("cp", lower = 0.001, upper = 0.8),
+  makeIntegerParam("maxdepth", lower = 1, upper = 30))
+
+ctrl <- makeTuneControlRandom(maxit = 5000)
+classification_best <- tuneParams("classif.rpart", task = task, resampling = rd,
+                                  par.set = params, control = ctrl, show.info = FALSE,
+                                  measures = list(acc))
+classification_best
+rpart <- makeLearner("classif.rpart", predict.type = "prob",
+                     par.vals = list("cp" = classification_best$x$cp,
+                    "maxdepth" = classification_best$x$maxdepth,
+                    "minsplit" = classification_best$x$minsplit,
+                    "minbucket" = classification_best$x$minbucket))
+rf_hyper <- train(rpart, task)
+```
+
+Above we can see the optimal found parameters for our problem. After learning them I made a better model.
+
+# Performance of the better model
+
+Let's check how much better our new model is.
+
+## AUC - 5 cv on training data
+
+```{r super_model_per}
+benchmark(learners = list(rpart), tasks = task, resamplings = rd, measures = auc)
+```
+
+## AUPRC - on test data
+
+```{r}
+"AUPRC"
+pred_c(rf_hyper, test)
+```
+
+We can see that the model is better when it comes to AUC, but it's performance acording to AUPRC is worst, so we have to decide which meassure is more important to us and act accordingly.
