@@ -127,6 +127,7 @@ For prediction I chose three interpretable models:
 * naive Bayes
 
 Also decision tree and naive Bayes will be trained on dataset with missing values.
+
 ## Training
 ```{r train, warning=FALSE, include=FALSE}
 # logistic regression
