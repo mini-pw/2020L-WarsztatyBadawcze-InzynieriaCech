@@ -152,13 +152,13 @@ res <-  tuneParams(learner_rpart, task = task_rpart, resampling = rdesc,
 learner_rpart <-  setHyperPars(learner_rpart, minsplit=res$x$minsplit, minbucket=res$x$minbucket, cp=res$x$cp)
 cv_rpart <- crossval(learner_rpart, task_rpart,iters = 5,measures = list(auc))
 model_rpart <- train(learner_rpart, task_rpart)
-pred_rpart <- predict(model_rpart, newdata = sick_test_imp)
+pred_rpart <- predict(model_rpart, newdata = sick_test)
 # naive bayes
 task_nb<- makeClassifTask("task_nb", data=sick_train_imp, target = "Class")
 learner_nb <- makeLearner("classif.naiveBayes", predict.type = 'prob')
 cv_nb <- crossval(learner_nb, task_nb,iters = 5,measures = list(auc))
 model_nb <- train(learner_nb, task_nb)
-pred_nb <- predict(model_nb, newdata = sick_test_imp)
+pred_nb <- predict(model_nb, newdata = sick_test)
 
 # decision trees with missing values
 task_rpart_mis<- makeClassifTask("task_rpart", data=sick_train, target = "Class")
@@ -262,7 +262,7 @@ g
 ```
 
 # Conclusion
-Decision tree with and without missing data has better aggregated AUC from 5-fold crossvalidation on training data than other models. Surprisingly they have the worst AUC on test data, but also best AUPRC on test data and this measure is more important due to imbalanced target class. ALos in this case is better to leave missing values for model to handle than doing imputation.
+Decision tree with and without missing data has better aggregated AUC from 5-fold crossvalidation on training data than other models. Surprisingly they have the worst AUC on test data, but also best AUPRC on test data and this measure is more important due to imbalanced target class. Also in this case it is better to leave missing values for model to handle than doing imputation.
 Decion tree from package `rpart` is an example of an interpretable model. We can see the decision tree.
 ```{r, fig.align='left', echo=FALSE}
 rpart.plot::rpart.plot(getLearnerModel(model_rpart_mis, more.unwrap = TRUE),roundint=FALSE)
