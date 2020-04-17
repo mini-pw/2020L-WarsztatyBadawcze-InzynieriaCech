@@ -75,9 +75,11 @@ In the future I am dropping all of the rows with NA so they won't be included in
 
 Next I want to see if there are any variables highly correlated that would cause our model to overfit.
 
-```{r}
+```{r fig.height=20, fig.width=20}
 DataExplorer::plot_correlation(dataset)
+```
 
+```{r}
 DataExplorer::introduce(dataset)
 DataExplorer::plot_intro(dataset)
 # keeping track of positive cases before deleting rows
@@ -140,15 +142,15 @@ task2 = TaskClassif$new(id = "classif_task",
 
 resampling = rsmp("cv", folds = 5)
 
-# r= resampling$instantiate(task)
-# 
-# prop.table(table(task$truth()))
-# 
-# prop.table(table(task$truth(r$train_set(1))))
-# prop.table(table(task$truth(r$train_set(2))))
-# prop.table(table(task$truth(r$train_set(3))))
-# prop.table(table(task$truth(r$train_set(4))))
-# prop.table(table(task$truth(r$train_set(5))))
+r= resampling$instantiate(task2)
+
+prop.table(table(task2$truth()))
+
+prop.table(table(task2$truth(r$train_set(1))))
+prop.table(table(task2$truth(r$train_set(2))))
+prop.table(table(task2$truth(r$train_set(3))))
+prop.table(table(task2$truth(r$train_set(4))))
+prop.table(table(task2$truth(r$train_set(5))))
 ```
 
 We can see that each of the splits has similiar Class' ratios as the original train set. It means I can do the tuning using this resampling.
@@ -164,7 +166,7 @@ tune_ps2 = ParamSet$new(list(
   ParamInt$new("maxdepth", lower = 7, upper = 30)
 ))
 
-evals20 = term("evals", n_evals = 3)
+evals20 = term("evals", n_evals = 50)
 
 instance2 = TuningInstance$new(
   task = task2,
@@ -191,6 +193,9 @@ auc_train <- pred_train$score(measure_auc)
 auc_test <- pred_test$score(measure_auc)
 ```
 
+
+# Final results
+
 ```{r}
 results <- data.frame(
   'auc train' = auc_train,
@@ -206,8 +211,13 @@ As we deal with unbalanced data `auprc` is much better measure to look at and it
 
 We can also look at how easy to interpret this model is by looking at the tree visualization and variables' importances.
 
+What I have proven is that cleaning data without losing positive cases is the way to deal with unbalanced data.
+
 ```{r cache = FALSE}
 rpart.plot::rpart.plot(learner_rpart2$model,roundint=FALSE)
 
 kable(learner_rpart2$importance())
 ```
+
+
+
