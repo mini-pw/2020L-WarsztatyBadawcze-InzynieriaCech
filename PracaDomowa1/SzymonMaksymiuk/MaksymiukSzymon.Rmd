@@ -1,0 +1,188 @@
+---
+title: "Sick dataset analysis"
+author: "Szymon Maksymiuk"
+date: "16 04 2020"
+output: 
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    code_folding: hide
+    number_sections: true
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(OpenML)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+
+```
+
+
+```{r data, include = FALSE}
+set.seed(10)
+dataset_openml <- getOMLDataSet(data.id = 38)
+dataset_raw <- dataset_openml$data
+test_index <- read.csv("index.txt", sep = " ")$x
+```
+
+# EDA
+
+First let's look at basic information about those data. 
+
+```{r}
+summary(dataset_raw)
+```
+```{r}
+DataExplorer::plot_missing(dataset_raw)
+```
+
+It is easy to spot straight away that one column, which is `TBG` contains 0 information. Therefore we will have it removed. Accordingly `TBG_measured` and `hypopituitary` have no information as well. 
+
+```{r}
+dataset_raw <- dataset_raw[,-which(names(dataset_raw)=="TBG")]
+dataset_raw <- dataset_raw[,-which(names(dataset_raw)=="TBG_measured")]
+dataset_raw <- dataset_raw[,-which(names(dataset_raw)=="hypopituitary")]
+```
+
+Before we move forward I would like to transform columns. I want factors with 2 levels to become a numeric vector with values 0 and 1.
+
+```{r}
+for (i in 1:ncol(dataset_raw)) {
+  if (!is.null(levels(dataset_raw[[i]]))) {
+    if (all(levels(dataset_raw[[i]]) %in% c("f", "t"))) {
+      dataset_raw[i] <- as.numeric(ifelse(dataset_raw[i] == 't', 1, 0))
+    }   
+  }
+}
+dataset_raw$sex <- ifelse(dataset_raw$sex == "M", 1, 0)
+dataset_raw$Class <- as.factor(ifelse(dataset_raw$Class == "sick", 1, 0))
+```
+
+```{r warning=FALSE}
+DataExplorer::plot_bar(dataset_raw)
+```
+
+It is easy to spot a lot of difficulties that we will have to face. Data contains a lot of unbalanced categorical variables. The most extreme example is `lithium` that has 3541 entries of `f` value and only `18` of `t`. Another problem is that also target variable, which is `Class` is rather unbalanced. It can cause problems during the modeling stage.  
+
+
+
+```{r warning=F}
+DataExplorer::plot_histogram(dataset_raw)
+```
+```{r plot, warning=F}
+DataExplorer::plot_qq(dataset_raw)
+```
+
+
+Distributions of continuous variables are quite pleasant. They are all a bit skewed but still quasi-normal what is good information. As exception stand `TSH` variable. Analysis of both histogram and qq plot shows a small anomaly.
+
+```{r}
+dataset_raw[dataset_raw$age>200,]
+```
+
+It is obviously a big mistake in data and therefore that row will be removed at the preprocessing stage.
+
+# Preprocessing
+
+Let's remove mistaken observation mentioned in the previous paragraph
+
+```{r preprocessing, include = FALSE}
+dataset_raw <- dataset_raw[-1365,]
+```
+
+Before we start proper preprocessing we have to split our data to test and train sets.
+
+```{r}
+dataset_test <- dataset_raw[-test_index,]
+dataset_train <- dataset_raw[test_index,]
+```
+
+Now we need to handle missing values in observations. `mice` package will be used along with `pmm` method to impute missing values.
+
+```{r}
+library(mice)
+m <- mice(dataset_train, method = "pmm", printFlag = FALSE)
+dataset <- complete(m, 3)
+```
+
+# Modeling
+
+Once we have our preprocessed data, it is hight time to start modeling part. `mlr` framework for modeling will be used. I planned on  using two types of white-box models:
+
+* decision tree
+* logistic regression.
+
+And train hyperparameters using auprc as target measure. Unfortunately logistic regression model turned up to be terrible. Therefore for the rest of the work I will use a decision tree.
+
+First I'm going to create a standard model that we want to improve.
+
+```{r}
+library("mlr")
+library("auprc")
+library("PRROC")
+
+my_auprc_fun = function(task, model, pred, feats, extra.args) {
+  prob <- pred$data$prob.1
+  y_truth <- getPredictionTruth(pred)
+  
+
+  fg <- prob[y_truth == 1]
+  bg <- prob[y_truth == 0]
+
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auprc <- pr$auc.integral
+  auprc
+}
+
+my_auprc = makeMeasure(
+  id = "myauprc", name = "AUPRC",
+  properties = c("classif", "classif.multi", "req.pred", "req.truth"),
+  minimize = FALSE, best = 1, worst = 0,
+  fun = my_auprc_fun
+)
+
+task <- makeClassifTask(data = dataset, target = "Class")
+lrn_tree <- makeLearner("classif.rpart", predict.type = "prob")
+
+model_tree <- train(lrn_tree, task)
+
+p_tree <- predict(model_tree, newdata = dataset_test)
+
+performance(p_tree, list(auc, my_auprc))
+```
+
+```{r eval=FALSE}
+library(mlrMBO)
+par.set <- makeParamSet(
+  makeIntegerParam("minsplit", 3, 40),
+  makeIntegerParam("minbucket", 2, 40),
+  makeNumericParam("cp", -10, -3, trafo = function(x) 2^x),
+  makeIntegerParam("maxdepth", 1, 30)
+)
+cv <- makeResampleDesc("CV", iters = 5L)
+ctrl <- makeMBOControl()
+ctrl <- setMBOControlTermination(ctrl, iters = 100)
+tune_ctrl <- makeTuneControlMBO(mbo.control = ctrl)
+res_tree <- tuneParams(lrn_tree, task, cv, par.set = par.set, control = tune_ctrl)
+```
+
+Tuning has slightly imporved our model. Here are results.
+
+```{r}
+lrn_tree <- makeLearner("classif.rpart", predict.type = "prob", par.vals = list(minsplit = 25,
+                                                                                minbucket = 7,
+                                                                                cp = 0.00108))
+
+model_tree <- train(lrn_tree, task)
+
+p_tree <- predict(model_tree, newdata = dataset_test)
+
+performance(p_tree, list(auc, my_auprc))
+```
