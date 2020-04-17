@@ -27,7 +27,7 @@ library(mice)
 
 ```{r data, include = FALSE}
 
-set.seed(245)
+set.seed(10)
 
 # download data
 data <- getOMLDataSet(data.id=38)
@@ -126,11 +126,13 @@ For prediction I chose three interpretable models:
 * decision tree
 * naive Bayes
 
+Also decision tree and naive Bayes will be trained on dataset with missing values.
 ## Training
 ```{r train, warning=FALSE, include=FALSE}
 # logistic regression
 task_logreg <- makeClassifTask("task_logreg", data=sick_train_imp, target = "Class")
 learner_logreg <- makeLearner("classif.logreg", predict.type = 'prob')
+cv_logreg <- crossval(learner_logreg, task_logreg,iters = 5,measures = list(auc))
 model_logreg <- train(learner_logreg, task_logreg)
 pred_logreg <- predict(model_logreg, newdata = sick_test_imp)
 # decision trees
@@ -147,17 +149,45 @@ rdesc <-  makeResampleDesc("CV", iters = 5L)
 res <-  tuneParams(learner_rpart, task = task_rpart, resampling = rdesc,
                  par.set = rpart_ps, control = ctrl, measures = list(acc,auc), show.info = FALSE)
 learner_rpart <-  setHyperPars(learner_rpart, minsplit=res$x$minsplit, minbucket=res$x$minbucket, cp=res$x$cp)
-
+cv_rpart <- crossval(learner_rpart, task_rpart,iters = 5,measures = list(auc))
 model_rpart <- train(learner_rpart, task_rpart)
 pred_rpart <- predict(model_rpart, newdata = sick_test_imp)
 # naive bayes
 task_nb<- makeClassifTask("task_nb", data=sick_train_imp, target = "Class")
 learner_nb <- makeLearner("classif.naiveBayes", predict.type = 'prob')
+cv_nb <- crossval(learner_nb, task_nb,iters = 5,measures = list(auc))
 model_nb <- train(learner_nb, task_nb)
 pred_nb <- predict(model_nb, newdata = sick_test_imp)
 
+# decision trees with missing values
+task_rpart_mis<- makeClassifTask("task_rpart", data=sick_train, target = "Class")
+learner_rpart_mis <- makeLearner("classif.rpart", predict.type = 'prob')
 
-preds <- list(pred_logreg,pred_rpart,pred_nb)
+
+rpart_ps_mis = makeParamSet(
+  makeIntegerParam("minsplit", lower=1, upper=50, default = 20),
+  makeIntegerParam("minbucket", lower=1, upper=30),
+  makeNumericParam("cp", lower=0, upper = 1, default = 0.01)
+)
+
+res_mis <-  tuneParams(learner_rpart_mis, task = task_rpart_mis, resampling = rdesc,
+                   par.set = rpart_ps_mis, control = ctrl, measures = list(acc,auc), show.info = FALSE)
+learner_rpart_mis <-  setHyperPars(learner_rpart_mis, minsplit=res_mis$x$minsplit, minbucket=res_mis$x$minbucket, cp=res_mis$x$cp)
+cv_rpart_mis <- crossval(learner_rpart_mis, task_rpart_mis,iters = 5,measures = list(auc))
+model_rpart_mis <- train(learner_rpart_mis, task_rpart_mis)
+pred_rpart_mis <- predict(model_rpart_mis, newdata = sick_test)
+
+
+# naive bayes with missing values
+task_nb_mis<- makeClassifTask("task_nb", data=sick_train, target = "Class")
+learner_nb_mis <- makeLearner("classif.naiveBayes", predict.type = 'prob')
+cv_nb_mis <- crossval(learner_nb_mis, task_nb_mis,iters = 5,measures = list(auc))
+model_nb_mis <- train(learner_nb_mis, task_nb_mis)
+pred_nb_mis <- predict(model_nb_mis, newdata = sick_test)
+
+
+
+preds <- list(pred_logreg,pred_rpart,pred_nb,pred_rpart_mis,pred_nb_mis)
 ```
 
 During training I performed hyperparameters tuning on decision tree. These hyperparameteres were used:
@@ -167,23 +197,30 @@ During training I performed hyperparameters tuning on decision tree. These hyper
 print(res$x)
 ```
 
+* Decision tree with missing values:
+
+```{r echo=FALSE}
+print(res_mis$x)
+```
+
 ## Measures
 
-Next, I calculated measures of goodness of predicton: AUC and AUPRC. I also created a comparison of ROC curve and precision-recall plot for each model.
+Next, I calculated measures of goodness of predicton: agggregated AUC from 5-fold crossvalidation on training set, AUC on test set and AUPRC on test set. I also created a comparison of ROC curve and precision-recall plot for each model.
 ```{r measures, warning=FALSE, echo=FALSE}
 #measures
-mods <- c("Logistic regression", "Decision trees","Naive Bayes")
+mods <- c("Logistic regression", "Decision trees","Naive Bayes", "Decision trees with missing values","Naive Bayes with missing values")
+n_mods <- length(mods)
 perf_auc <- list()
 perf_auprc <- list()
 perf_rocr <- list()
-for (i in 1:3){
+for (i in 1:n_mods){
   perf_auc[i] <- performance(preds[[i]],list(auc))
   perf_auprc[i] <- auprc(preds[[i]]$data$prob.sick, sick_test_imp$Class, "sick")
   pred2 <- ROCR::prediction(as.vector(preds[[i]]$data$prob.sick), as.vector(preds[[i]]$data$truth))
   perf_rocr[i] <- ROCR::performance(pred2,"tpr","fpr")
 }
 
-kable(data.frame(model=mods,auc=unlist(perf_auc),auprc=unlist(perf_auprc)), caption="Measures of goodness of prediction for each model")%>%
+kable(data.frame(model=mods,'auc 5-crossvalidation'=c(cv_logreg$aggr,cv_rpart$aggr, cv_nb$aggr, cv_rpart_mis$aggr, cv_nb_mis$aggr),auc=unlist(perf_auc),auprc=unlist(perf_auprc)), caption="Measures of goodness of prediction for each model")%>%
   kable_styling(latex_options = "hold_position")
 
 ```
@@ -192,10 +229,10 @@ kable(data.frame(model=mods,auc=unlist(perf_auc),auprc=unlist(perf_auprc)), capt
 # plot auc
 
 ROCR::plot(perf_rocr[[1]], main = "ROC curve", col=1, lwd=3)
-for(i in 2:3){
+for(i in 2:n_mods){
   ROCR::plot(perf_rocr[[i]], main = "ROC curve", col=i, add=TRUE, lwd=3)
 }
-legend(x=0.5,y=0.5, mods, fill=1:3)
+legend(x=0.2,y=0.6, mods, fill=1:n_mods)
 
 
 calculate_measures_by_threshold <- function(prob, y_truth, positive_value) {
@@ -213,7 +250,7 @@ calculate_measures_by_threshold <- function(prob, y_truth, positive_value) {
 
 # plot auprc
 m <- data.frame()
-for(i in 1:3){
+for(i in 1:n_mods){
  m <- rbind(m, cbind(calculate_measures_by_threshold(preds[[i]]$data$prob.sick, sick_test$Class, "sick"),model=mods[i]))
 }
 g <-  ggplot(aes(x = rec, y = prec, group = model, colour=model), data=m)+ geom_line()+
@@ -224,9 +261,9 @@ g
 ```
 
 # Conclusion
-Even though decision tree has smaller AUC than logistic regression and naive Bayes, it has significantly higher AUPRC, which is better measure, when target variable is imbalanced like in this example.
+Decision tree with and without missing data has better aggregated AUC from 5-fold crossvalidation on training data than other models. Surprisingly they have the worst AUC on test data, but also best AUPRC on test data and this measure is more important due to imbalanced target class. ALos in this case is better to leave missing values for model to handle than doing imputation.
 Decion tree from package `rpart` is an example of an interpretable model. We can see the decision tree.
 ```{r, fig.align='left', echo=FALSE}
-rpart.plot::rpart.plot(getLearnerModel(model_rpart, more.unwrap = TRUE),roundint=FALSE)
+rpart.plot::rpart.plot(getLearnerModel(model_rpart_mis, more.unwrap = TRUE),roundint=FALSE)
 ```
 
