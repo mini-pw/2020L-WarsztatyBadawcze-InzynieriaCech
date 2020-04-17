@@ -347,3 +347,10 @@ test.task <- makeClassifTask("with mean of negatives",impute.with.mean.of.negati
 
 auprcWrapper(-1,-1,predict(final.model, test.task),-1,-1)
 ```
+
+Final AUC on test dataset
+```{r final.auc}
+test.task <- makeClassifTask("with mean of negatives",impute.with.mean.of.negatives(test_data), target = "Class", positive = "sick")
+pred <- predict(final.model, test.task)
+measureAUC(pred$data$prob.sick,pred$data$truth,"negative","sick")
+```

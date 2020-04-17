@@ -763,6 +763,11 @@ rpart.plot::rpart.plot(getLearnerModel(final.model))</code></pre>
 
 auprcWrapper(-1,-1,predict(final.model, test.task),-1,-1)</code></pre>
 <pre><code>## [1] 0.7626269</code></pre>
+<p>Final AUC on test dataset</p>
+<pre class="r"><code>test.task &lt;- makeClassifTask(&quot;with mean of negatives&quot;,impute.with.mean.of.negatives(test_data), target = &quot;Class&quot;, positive = &quot;sick&quot;)
+pred &lt;- predict(final.model, test.task)
+measureAUC(pred$data$prob.sick,pred$data$truth,&quot;negative&quot;,&quot;sick&quot;)</code></pre>
+<pre><code>## [1] 0.8963329</code></pre>
 </div>
 </div>
 
