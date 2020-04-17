@@ -1,0 +1,913 @@
+---
+title: "Sick dataset analysis"
+author: "Michal Stawikowski"
+date: "04 04 2020"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    code_folding: hide
+    number_sections: true
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(mlr)
+library(funModeling)
+library(plsr)
+library(ggfortify)
+library(summarytools)
+library(kknn)
+library(VIM)
+library(mice)
+library(bnstruct)
+library(PRROC)
+library(e1071)
+library(DALEX)
+library(ingredients)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(rSAFE)
+library(randomForest)
+library(gbm)
+library(xgboost)
+library(mltools)
+library(data.table)
+library(mlrMBO)
+library(DiceKriging)
+library(rgenoud)
+```
+
+
+```{r data, include = FALSE}
+set.seed(10)
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+```
+
+# EDA
+
+```{r summmarize, warning=F, results = 'asis'}
+print(dfSummary(dataset_raw), method = "render")
+
+```
+
+Short summary of data. As we can see there are two variables with only one level and some outliers.
+
+## Outliers
+
+```{r outliers, warning=F}
+plot_boxplot(dataset_raw[,c("age", "FTI", "TSH", "TT4", "T3", "Class")], by = "Class", ncol = 2)
+```
+
+
+```{r preprocessing, include = FALSE}
+dataset <- dataset_raw %>% 
+  # drop 'TBG' - it is an empty column:
+  select(-c(TBG,hypopituitary,TBG_measured))
+```
+
+## Corelations
+
+```{r coorplot continous}
+
+plot_correlation(na.omit(dataset),  type = "c")
+
+```
+
+We can see that some of variables are highly correlated.
+
+## PCA
+
+```{r pca, warning=F, message=F}
+
+pca_df <- na.omit(select(dataset, -Class))
+
+plot_prcomp(pca_df, variance_cap = 0.23, nrow = 1L, ncol = 1L)
+
+```
+
+```{r only numeric}
+pca_df <- na.omit(dataset)
+nums <- unlist(lapply(pca_df, is.numeric))  
+data <- pca_df[,nums]
+autoplot(prcomp(data), data = pca_df, colour = 'Class')
+```
+
+PCA did not help a lot with seperating our two classes.
+
+## Cross plots
+
+```{r crossplots, warning=F, message=F}
+cross_plot(data=na.omit(dataset), input=c("age", "FTI","referral_source", "pregnant"), target="Class", plot_type = "percentual")
+```
+
+We can see that age same as referral_source has big impact on our target variable.
+
+# Removing outliers
+
+```{r outliers removing, warning=F, message=F}
+cd <- dataset[dataset$age<120 | is.na(dataset$age),]
+cd <- capLargeValues(cd, target = "Class",cols = c("FTI"),threshold = 300)
+cd <- capLargeValues(cd, target = "Class",cols = c("T3"),threshold = 7.5)
+cd <- cd[cd$TSH<250 | is.na(cd$TSH),]
+cd <- capLargeValues(cd, target = "Class",cols = c("TT4"),threshold = 300)
+
+dataset <- cd
+plot_boxplot(dataset[,c("age", "FTI", "TSH", "TT4", "T3", "Class")], by = "Class", ncol = 2)
+
+```
+
+
+We removed the most outliers.
+
+# Imputation
+
+```{r missings}
+gg_miss_var(dataset, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+```
+
+## Pattern of missing data
+
+```{r pattern of missing data, warning=F, message=F}
+aggr_plot <- aggr(dataset, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(dataset), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+From above plot we can see that most of data is ok, and the missing ones are likely to be random.
+
+```{r train test, include = FALSE}
+index <-read.table("indeksy_treningowe.txt")
+
+dataset <- dataset_raw %>% 
+  # drop 'TBG' - it is an empty column:
+  select(-c(TBG,hypopituitary,TBG_measured))
+
+target <- ifelse(dataset$Class == "sick",1,0)
+dataset$Class <- as.factor(target)
+
+train <- dataset[unlist(index),]
+test <- dataset[-unlist(index),]
+
+cd <- train[train$age<120 | is.na(train$age),]
+cd <- capLargeValues(cd, target = "Class",cols = c("FTI"),threshold = 300)
+cd <- capLargeValues(cd, target = "Class",cols = c("T3"),threshold = 7.5)
+cd <- cd[cd$TSH<250 | is.na(cd$TSH),]
+cd <- capLargeValues(cd, target = "Class",cols = c("TT4"),threshold = 300)
+
+train <- cd
+
+```
+
+
+We will test various forms of imputation and choose the best using a model resistant to missing data - rpart decision tree.
+
+## Mode, mean imputation
+
+```{r basic imputation}
+imp_basic_train <- mlr::impute(train, classes = list(factor = imputeMode(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")$data
+imp_basic_test <- mlr::impute(test, classes = list(factor = imputeMode(), numeric = imputeMean()), dummy.classes = c("integer","factor"), dummy.type = "numeric")$data
+```
+
+## Knn imputation
+
+```{r kNN imputation, cache = T}
+imp_knn_train <- VIM::kNN(train, imp_var = F)
+imp_knn_test <- VIM::kNN(test, imp_var = F)
+```
+
+## Mice imputation
+
+```{r mice imputation, cache = T, warning=F, message=F}
+imp_mice_train_F = mice(train, m=5, maxit = 40, print = FALSE)
+imp_mice_test_F = mice(test, m=5, maxit = 40, print = FALSE)
+imp_mice_train_F$method
+densityplot(imp_mice_train_F)
+imp_mice_train=mice::complete(imp_mice_train_F,1)
+imp_mice_test=mice::complete(imp_mice_test_F,1)
+
+```
+
+On the plot we can see distribution of inputed data - red in comparison to rest of the data - blue. And above this there are methods used to impute.
+
+```{r without na}
+train_omit <- na.omit(train)
+test_omit <- na.omit(test)
+```
+
+## Comparing with rpart
+
+```{r, warning=F,message=F, results=F}
+task_na <- mlr::makeClassifTask(id = "na", data = train, target = "Class", positive = 1)
+task_basic <- mlr::makeClassifTask(id = "basic", data = imp_basic_train, target = "Class", positive = 1)
+task_knn <- mlr::makeClassifTask(id = "knn", data = imp_knn_train, target = "Class", positive = 1)
+task_mice <- mlr::makeClassifTask(id = "mice", data = imp_mice_train, target = "Class", positive = 1)
+task_wo_na <- mlr::makeClassifTask(id = "wo_na", data = train_omit, target = "Class", positive = 1)
+
+dt <- mlr::makeLearner(cl = "classif.rpart", predict.type = "prob")
+rd <- makeResampleDesc("CV", iters=5)
+tasks <- list(task_na, task_basic, task_knn, task_mice, task_wo_na)
+names <- c("na", "basic", "knn", "mice", "wo_na")
+
+
+
+bmr <- benchmark(learners = dt, tasks = tasks, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+for (name in names) {
+truth <- pred[[name]]$classif.rpart$data$truth
+probs <- pred[[name]]$classif.rpart$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+cat(name, " PR AUC: ",pr$auc.integral, " ROC AUC: ",roc$auc, "\n")
+}
+```
+
+![Imputations score](1.png)
+
+The best results in case of PR AUC from the mentioned methods of data imputation were given by the medium and mod method.
+
+# Feature Engineering
+
+```{r include = F}
+
+data_tr <- select(imp_basic_train, -sex.dummy)
+data_ts <- select(imp_basic_test, -sex.dummy)
+
+```
+
+## Skewness
+
+```{r histograms}
+DataExplorer::plot_histogram(imp_basic_train)
+```
+
+TSH variable is strongly skewed, we will try to fix it by applying log transformation.
+
+```{r skewness}
+	
+e1071::skewness(imp_basic_train$TSH,type = 2)
+e1071::skewness(imp_basic_train$age,type = 2)
+
+data_tr$TSH <- log(data_tr$TSH)
+data_ts$TSH <- log(data_ts$TSH)
+
+plot_histogram(data_ts$TSH, title = "Log of TSH")
+
+```
+
+It looks ok now.
+
+## Itepretable models
+
+We will compare some of the interpretable models.
+
+```{r models comparison, warning=F, message=F}
+
+task <- mlr::makeClassifTask(id = "1", data = data_tr, target = "Class", positive = 1)
+ctree <- mlr::makeLearner(cl = "classif.rpart", predict.type = "prob")
+logreg <- mlr::makeLearner(cl = "classif.logreg", predict.type = "prob")
+neigh <- mlr::makeLearner(cl = "classif.kknn", predict.type = "prob")
+naive <- mlr::makeLearner(cl = "classif.naiveBayes", predict.type = "prob")
+
+modctree <- mlr::train(ctree, task)
+modlog <- mlr::train(logreg, task)
+modknn <- mlr::train(neigh, task)
+modnaive <- mlr::train(naive, task)
+
+pred_c <- function(model, newdata)  {
+  
+  
+  pred <- predict(model, newdata = newdata)
+  prob <- getPredictionProbabilities(pred)
+  
+
+  fg <- prob[newdata[,"Class"] == 1]
+  bg <- prob[newdata[,"Class"] == 0]
+
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  return (pr$auc.integral)
+}
+
+pred_c2 <- function(data, name)  {
+  
+  
+  task <- mlr::makeClassifTask(id = "1", data = data, target = "Class", positive = 1)
+  dt <- mlr::makeLearner(cl = paste("classif.", name, sep=""), predict.type = "prob")
+  rd <- makeResampleDesc("CV", iters=5)
+
+  bmr <- benchmark(learners = dt, tasks = task, resamplings = rd, measures = auc, show.info = F)
+  pred <- getBMRPredictions(bmr)
+  
+  arg = paste("classif.", name, sep="")
+
+  truth <- pred$`1`[[arg]]$data$truth
+  probs <- pred$`1`[[arg]]$data$prob.1
+  fg <- probs[truth == 1]
+  bg <- probs[truth == 0]
+
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  
+  return (pr$auc.integral)
+}
+
+pred <-  function(object, newdata) {pred <- predict(object, newdata=newdata)
+                                              response <- pred$data[,3]
+                                              return(as.numeric(as.character(response)))}
+
+exp_ctree <- DALEX::explain(modctree, data=select(data_ts, -Class), y=as.numeric(as.character(data_ts$Class)), label="tree", predict_function = pred,
+                                        colorize = FALSE, verbose = F)
+exp_log <- DALEX::explain(modlog, data=select(data_ts, -Class), y=as.numeric(as.character(data_ts$Class)), label="logreg", predict_function = pred,
+                                        colorize = FALSE,verbose = F)
+exp_knn <- DALEX::explain(modknn, data=select(data_ts, -Class), y=as.numeric(as.character(data_ts$Class)), label="knn", predict_function = pred,
+                                        colorize = FALSE,verbose = F)
+exp_naive <- DALEX::explain(modnaive, data=select(data_ts, -Class), y=as.numeric(as.character(data_ts$Class)), label="naive", predict_function = pred,
+                                        colorize = FALSE,verbose = F)
+
+
+```
+
+## Results
+
+```{r warning=F, cache = T}
+res <- data.frame(PR_AUC = c(pred_c2(data_tr, "rpart"),pred_c2(data_tr, "logreg"),pred_c2(data_tr, "kknn"),pred_c2(data_tr, "naiveBayes")), Models = c("Descision Tree", "Logreg", "KNN", "NaiveBayes"))
+ggplot(data = res,aes(x = Models, y = PR_AUC,fill = Models)) + geom_bar(stat = "identity",position = 'dodge') + geom_text(aes(label=sprintf("%0.4f", round(PR_AUC, digits = 4))), position=position_dodge(width=0.9), vjust=-0.25, parse = T)
+```
+
+
+We can see that the decision trees definitely dominated the other models in terms of PR AUC.
+
+## XAI
+
+
+We will compare how models made their decisions.
+
+### Feature Importance
+
+```{r feature_imp, cache = T}
+mp_ct <- variable_importance(exp_ctree, loss_function = loss_root_mean_square)
+mp_log <- variable_importance(exp_log, loss_function = loss_root_mean_square)
+mp_knn<- variable_importance(exp_knn, loss_function = loss_root_mean_square)
+plot(mp_ct)
+plot(mp_knn)
+plot(mp_log)
+
+```
+
+
+Decision trees took into account definitely the least variables.
+
+### PDP
+
+#### TT4
+
+```{r pdp TT4, cache = T}
+pdp_ct  <- variable_effect(exp_ctree, variable = "TT4", type = 'partial_dependency')
+pdp_log  <- variable_effect(exp_log, variable = "TT4", type = 'partial_dependency')
+pdp_knn  <- variable_effect(exp_knn, variable = "TT4", type = 'partial_dependency')
+
+plot(pdp_ct)
+plot(pdp_log)
+plot(pdp_knn)
+
+```
+
+
+Compared to other models, rpart simply divided the data relative to the variables considered.
+
+#### FTI
+
+```{r pdp FTI, cache = T}
+
+pdp_ct  <- variable_effect(exp_ctree, variable = "FTI", type = 'partial_dependency')
+pdp_log  <- variable_effect(exp_log, variable = "FTI", type = 'partial_dependency')
+pdp_knn  <- variable_effect(exp_knn, variable = "FTI", type = 'partial_dependency')
+
+plot(pdp_ct)
+plot(pdp_log)
+plot(pdp_knn)
+
+```
+
+
+In the case of rpart, we see a division into only two groups.
+
+#### Referral_source
+
+```{r, warning=F, message=F}
+pdp_ct  <- variable_effect(exp_ctree, variable = "referral_source", type = 'partial_dependency')
+pdp_log  <- variable_effect(exp_log, variable = "referral_source", type = 'partial_dependency')
+pdp_knn  <- variable_effect(exp_knn, variable = "referral_source", type = 'partial_dependency')
+
+plot(pdp_ct)
+plot(pdp_log)
+plot(pdp_knn)
+```
+
+This time rpart made quite an interesting decision considering the proportions of the sick and healthy, which we saw on crossplots.
+
+## Decision tree
+
+```{r tree schema, cache = T}
+rparttree <- rpart(Class~., data = data_tr, model = T)
+rpart.plot::rpart.plot(rparttree)
+```
+
+The rpart classification was based only on 6 different variables and still obtained the best results. This could be the key to getting better results. So let's look at an algorithms, similar to decision trees but definitely more powerful - Random Forest and Xgboost. We will try to use the ways it divides data during the classification.
+
+## Black boxes
+
+### Random Forest
+
+```{r Random Forest results, cache = T}
+
+task <- mlr::makeClassifTask(id = "1", data = data_tr, target = "Class", positive = 1)
+dt <- mlr::makeLearner(cl = "classif.ranger", predict.type = "prob")
+rd <- makeResampleDesc("CV", iters=5)
+
+bmr <- benchmark(learners = dt, tasks = task, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+truth <- pred$`1`$classif.ranger$data$truth
+probs <- pred$`1`$classif.ranger$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+roc$auc
+```
+
+### Xgboost
+
+```{r Xgboost results, cache = T}
+xg <- select(data_tr, -Class)
+
+xg <- one_hot(data.table(xg))
+xg$Class = select(data_tr, Class)
+xg <- data.frame(xg)
+
+xgt <- select(data_ts, -Class)
+
+xgt <- one_hot(data.table(xgt))
+xgt$Class = select(data_ts, Class)
+xgt <- data.frame(xgt)
+
+task <- mlr::makeClassifTask(id = "1", data = xg, target = "Class", positive = 1)
+dt <- mlr::makeLearner(cl = "classif.xgboost", predict.type = "prob")
+rd <- makeResampleDesc("CV", iters=5)
+
+bmr <- benchmark(learners = dt, tasks = task, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+truth <- pred$`1`$classif.xgboost$data$truth
+probs <- pred$`1`$classif.xgboost$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+roc$auc
+```
+
+
+Both black-box models obtained very good results on our data set. Let's try to use them in upgrading our interpretable models.
+
+## SAFE
+
+For this purpose, we will use the SAFE method, which will allow us to transform data in a similar way as the previously mentioned models do.
+
+### Random Forest
+
+```{r Extraction, cache = T}
+
+model_rf1 <- randomForest(Class ~., data = data_tr[1:2000,])
+explainer_rf1 <- explain(model_rf1, data=select(data_tr[2001:3010,], -Class), y=as.numeric(as.character(data_tr[2001:3010,]$Class)), label = "rf1", verbose = FALSE)
+safe_extractor <- safe_extraction(explainer_rf1, penalty = 10, verbose = FALSE)
+print(safe_extractor)
+```
+
+We can see how does SAFE algorithm transform data base on Random Forest.
+
+```{r numerical variables, cache = T}
+plot(safe_extractor, variable = "age")
+plot(safe_extractor, variable = "TT4")
+```
+
+The charts show how new variables arose.
+
+```{r categorical variables, cache = T}
+plot(safe_extractor, variable = "referral_source")
+```
+
+#### Transformation
+
+
+Now we will process our data in accordance with SAFE extractor and choose the most valuable new and old ones.
+
+```{r transform, warning=F,message=F, cache = T}
+data1 <- safely_transform_data(safe_extractor, data_tr, verbose = FALSE)
+vars <- safely_select_variables(safe_extractor, data1, which_y = "Class", verbose = FALSE)
+data1 <- data1[,c("Class", vars)]
+
+print(vars)
+
+data1t <- safely_transform_data(safe_extractor, data_ts, verbose = FALSE)
+data1t <- data1t[,c("Class", vars)]
+
+
+```
+
+These variables were choosen.
+
+#### Comparing with old data
+
+```{r comparing model on new dataset, warning=F, message=F}
+task <- mlr::makeClassifTask(id = "1", data = data1, target = "Class", positive = 1)
+
+
+modctree2 <- mlr::train(ctree, task)
+modlog2 <- mlr::train(logreg, task)
+modknn2 <- mlr::train(neigh, task)
+modnaive2 <- mlr::train(naive, task)
+
+
+task1 <- mlr::makeClassifTask(id = "1", data = data_tr, target = "Class", positive = 1)
+task2 <- mlr::makeClassifTask(id = "2", data = data1, target = "Class", positive = 1)
+tasks <- list(task1,task2)
+rd <- makeResampleDesc("CV", iters=5)
+bmr <- benchmark(learners = logreg, tasks = tasks, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+truth <- pred$`1`$classif.logreg$data$truth
+probs <- pred$`1`$classif.logreg$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+roc$auc
+
+truth <- pred$`2`$classif.logreg$data$truth
+probs <- pred$`2`$classif.logreg$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+roc$auc
+
+```
+
+#### Results
+
+```{r new results, warning=F, cache = T}
+dat <- data.frame(PR_AUC_OLD = c(pred_c2(data_tr, "rpart"),pred_c2(data_tr, "logreg"),pred_c2(data_tr, "kknn"),pred_c2(data_tr, "naiveBayes")), Models = c("Descision Tree", "Logreg", "KNN", "NaiveBayes"),PR_AUC_NEW = c(pred_c2(data1, "rpart"),pred_c2(data1, "logreg"),pred_c2(data1, "kknn"),pred_c2(data1, "naiveBayes")))
+
+dat_long <- dat %>%
+  gather("DataSet", "PR_AUC", -Models)
+
+ggplot(dat_long, aes(x = Models, y = PR_AUC, fill = DataSet)) +
+  geom_col(position = "dodge")+ geom_text(aes(label=sprintf("%0.4f", round(PR_AUC, digits = 4))), position=position_dodge(width=0.9), vjust=-0.25, parse = T) + ggtitle("Random Forest surrogate model")
+```
+
+We achieved quite good results thanks to this methods.
+
+### Xgboost
+
+
+Now the same with the second algorithm.
+
+```{r, warning=F, message=F}
+
+xg <- select(data_tr, -Class)
+
+xg <- one_hot(data.table(xg))
+xg$Class = select(data_tr, Class)
+xg <- data.frame(xg)
+
+xgt <- select(data_ts, -Class)
+
+xgt <- one_hot(data.table(xgt))
+xgt$Class = select(data_ts, Class)
+xgt <- data.frame(xgt)
+
+task <- mlr::makeClassifTask(id = "1", data = xg[1:2001,], target = "Class", positive = 1)
+
+dt <- mlr::makeLearner(cl = "classif.xgboost", predict.type = "prob")
+modxg <- mlr::train(dt, task)
+pred <-  function(object, newdata) {pred <- predict(object, newdata=newdata)
+                                              response <- pred$data[,3]
+                                              return(as.numeric(as.character(response)))}
+
+model_xg1 <- modxg
+explainer_xg1 <- DALEX::explain(model_xg1, data=select(xg[2001:3010,], -Class), y=as.numeric(as.character(xg[2001:3010,]$Class)), label = "rf1", verbose = FALSE, predict_function = pred)
+safe_extractorxg <- safe_extraction(explainer_xg1, penalty = 10, verbose = FALSE)
+
+data1xg <- safely_transform_data(safe_extractorxg, xg, verbose = FALSE)
+varsxg <- safely_select_variables(safe_extractorxg, data1xg, which_y = "Class", verbose = FALSE)
+data1xg <- data1xg[,c("Class", varsxg)]
+
+
+data1txg <- safely_transform_data(safe_extractorxg, xgt, verbose = FALSE)
+data1txg <- data1txg[,c("Class", varsxg)]
+
+task <- mlr::makeClassifTask(id = "1", data = data1xg, target = "Class", positive = 1)
+
+
+modctree2xg <- mlr::train(ctree, task)
+modlog2xg <- mlr::train(logreg, task)
+modknn2xg <- mlr::train(neigh, task)
+modnaive2xg <- mlr::train(naive, task)
+
+task1 <- mlr::makeClassifTask(id = "1", data = data_tr, target = "Class", positive = 1)
+task2 <- mlr::makeClassifTask(id = "2", data = data1xg, target = "Class", positive = 1)
+tasks <- list(task1,task2)
+rd <- makeResampleDesc("CV", iters=5)
+bmr <- benchmark(learners = ctree, tasks = tasks, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+truth <- pred$`1`$classif.rpart$data$truth
+probs <- pred$`1`$classif.rpart$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+roc$auc
+
+truth <- pred$`2`$classif.rpart$data$truth
+probs <- pred$`2`$classif.rpart$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+roc$auc
+
+
+```
+#### Results
+
+```{r new results xg, warning=F, cache = T}
+dat <- data.frame(PR_AUC_OLD = c(pred_c2(data_tr, "rpart"),pred_c2(data_tr, "logreg"),pred_c2(data_tr, "kknn"),pred_c2(data_tr, "naiveBayes")), Models = c("Descision Tree", "Logreg", "KNN", "NaiveBayes"),PR_AUC_NEW = c(pred_c2(data1xg, "rpart"),pred_c2(data1xg, "logreg"),pred_c2(data1xg, "kknn"),pred_c2(data1xg, "naiveBayes")))
+
+dat_long <- dat %>%
+  gather("DataSet", "PR_AUC", -Models)
+
+ggplot(dat_long, aes(x = Models, y = PR_AUC, fill = DataSet)) +
+  geom_col(position = "dodge")+ geom_text(aes(label=sprintf("%0.4f", round(PR_AUC, digits = 4))), position=position_dodge(width=0.9), vjust=-0.25, parse = T) + ggtitle("Xgboost surrogate model")
+```
+
+
+The results are not as great as in the case of Random Forest but we also see improvement.
+
+# Feature Selection
+
+
+Now, based on the Random Forest model, we will begin to select variables.
+
+```{r fs with random forest}
+fit <- randomForest(Class~., data=data1)
+VI_F <- randomForest::importance(fit)
+VI_F <- data.frame(VI_F)
+VI_F$names <- rownames(VI_F)
+rownames(VI_F) <- NULL
+VI_F <- data.table(VI_F[order(VI_F$MeanDecreaseGini,decreasing = T),])
+VI_F
+```
+
+```{r ft imp, include=F}
+
+dataFT <- data1[,VI_F[1:13,]$names]
+dataFT$Class <- data1$Class
+```
+
+We will how this selection affected PR AUC.
+
+## Logistic Regression
+
+```{r ft test lr, warning=F, message=F}
+task1 <- mlr::makeClassifTask(id = "1", data = data1, target = "Class", positive = 1)
+task2 <- mlr::makeClassifTask(id = "2", data = dataFT, target = "Class", positive = 1)
+tasks <- list(task1,task2)
+rd <- makeResampleDesc("CV", iters=5)
+bmr <- benchmark(learners = logreg, tasks = tasks, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+truth <- pred$`1`$classif.logreg$data$truth
+probs <- pred$`1`$classif.logreg$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+
+truth <- pred$`2`$classif.logreg$data$truth
+probs <- pred$`2`$classif.logreg$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+```
+
+## KNN
+
+```{r ft test knn, warning=F, message=F}
+dataFT <- data1[,VI_F[1:5,]$names]
+dataFT$Class <- data1$Class
+
+task1 <- mlr::makeClassifTask(id = "1", data = data1, target = "Class", positive = 1)
+task2 <- mlr::makeClassifTask(id = "2", data = dataFT, target = "Class", positive = 1)
+tasks <- list(task1,task2)
+rd <- makeResampleDesc("CV", iters=5)
+bmr <- benchmark(learners = neigh, tasks = tasks, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+truth <- pred$`1`$classif.kknn$data$truth
+probs <- pred$`1`$classif.kknn$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+
+truth <- pred$`2`$classif.kknn$data$truth
+probs <- pred$`2`$classif.kknn$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+```
+
+WOW
+
+## Decision Tree
+
+```{r ft test dt, warning=F, message=F}
+dataFT <- data1[,VI_F[1:13,]$names]
+dataFT$Class <- data1$Class
+
+task1 <- mlr::makeClassifTask(id = "1", data = data1, target = "Class", positive = 1)
+task2 <- mlr::makeClassifTask(id = "2", data = dataFT, target = "Class", positive = 1)
+tasks <- list(task1,task2)
+rd <- makeResampleDesc("CV", iters=5)
+bmr <- benchmark(learners = ctree, tasks = tasks, resamplings = rd, measures = auc, show.info = F)
+pred <- getBMRPredictions(bmr)
+
+truth <- pred$`1`$classif.rpart$data$truth
+probs <- pred$`1`$classif.rpart$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+
+truth <- pred$`2`$classif.rpart$data$truth
+probs <- pred$`2`$classif.rpart$data$prob.1
+fg <- probs[truth == 1]
+bg <- probs[truth == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+```
+
+We can see that thanks to this stage we have achieved a significant improvement in terms of PR AUC. In the case of KNN huge and unexpected given the previous results.
+
+# Tuning
+
+Finally, we will start tuning selected models and carry out the final tests. The result will be AUC and PR AUC.  
+In the report I did not include the results of adding data using the SMOKE function from the less occurring class and data scaling, because they did not positively affect the performance of the models.
+
+## Decison tree
+
+```{r decision tree tuning, cache = T,results=F, warning=F, message=F}
+
+pred_c <- function(model, newdata)  {
+  
+  
+  pred <- predict(model, newdata = newdata)
+  prob <- getPredictionProbabilities(pred)
+  
+
+  fg <- prob[newdata[,"Class"] == 1]
+  bg <- prob[newdata[,"Class"] == 0]
+  
+  roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  a <- c(roc$auc, pr$auc.integral)
+  return(a)
+}
+
+trainTask <- mlr::makeClassifTask(id = "1", data = data1, target = "Class", positive = 1)
+makeatree <- makeLearner("classif.rpart", predict.type = "prob")
+set_cv <- makeResampleDesc("CV",iters = 5L)
+gs <- makeParamSet(
+makeIntegerParam("minsplit",lower = 10, upper = 50),
+makeIntegerParam("minbucket", lower = 5, upper = 50),
+makeNumericParam("cp", lower = 0.001, upper = 0.2)
+)
+
+
+
+gscontrol <- makeTuneControlMBO()
+
+
+stune <- tuneParams(learner = makeatree, resampling = set_cv, task = trainTask, par.set = gs, control = gscontrol, measures = auc)
+
+t.tree <- setHyperPars(makeatree, par.vals = stune$x)
+
+t.rpart <- mlr::train(t.tree, trainTask)
+
+
+```
+
+## Decision tree final result
+
+```{r dt, warning = F, message=F}
+t.tree <- setHyperPars(makeatree, par.vals = list(minsplit = 11, minbucket = 11, cp = 0.001019251))
+
+t.rpart <- mlr::train(t.tree, trainTask)
+
+pred_c(t.rpart, data1t)
+```
+
+## KNN
+
+```{r knn tuning, cache = T, eval=T, results=F, warning=F, message=F}
+
+dataFT <- data1[,VI_F[1:5,]$names]
+dataFT$Class <- data1$Class
+
+trainTask <- mlr::makeClassifTask(id = "1", data = dataFT, target = "Class", positive = 1)
+makeatree <- makeLearner("classif.kknn", predict.type = "prob")
+set_cv <- makeResampleDesc("CV",iters = 5L)
+gs <- makeParamSet(
+makeIntegerParam("k",lower = 5, upper = 15),
+makeNumericParam("distance", lower = 1, upper = 2)
+)
+
+
+
+gscontrol <- makeTuneControlMBO()
+
+
+stune <- tuneParams(learner = makeatree, resampling = set_cv, task = trainTask, par.set = gs, control = gscontrol, measures = auc)
+
+t.kknn <- setHyperPars(makeatree, par.vals = stune$x)
+
+t.kknn <- mlr::train(t.kknn, trainTask)
+
+
+```
+
+## KNN final result
+
+```{r knn results}
+
+pred_c(t.kknn, data1t)
+```
+
+
+## Logistic regression final result
+
+```{r logreg results, warning=F, message=F}
+dataFT <- data1[,VI_F[1:13,]$names]
+dataFT$Class <- data1$Class
+
+task <- mlr::makeClassifTask(id = "1", data = dataFT, target = "Class", positive = 1)
+
+
+modlog2 <- mlr::train(logreg, task)
+
+pred_c(modlog2, data1t)
+```
+
+
+All models significantly improved their performance, but special attention deserves the knn algorithm, which definitely beat its competitors.
