@@ -232,6 +232,7 @@ After imputation we  have a better model performance. I tried also some other me
 
 I tried also tuning of hyperparameters.
 ```{r params,  echo=FALSE, include=FALSE}
+task = makeClassifTask(data=sick_train, target="Class", positive="1")
 learner_rpart = makeLearner("classif.rpart", predict.type='prob')
 task_rpart = makeClassifTask(data=sick_train, target="Class", positive="1")
 parameters = makeParamSet(
@@ -256,6 +257,7 @@ r$aggr
 
 
 ```{r test,  include=TRUE}
+task = makeClassifTask(data=sick_train, target="Class", positive="1")
 model_rpart <- train(learner_rpart_tuned, task)
 predict_rpart <- predict(model_rpart, newdata = sick_test)
 prob <- getPredictionProbabilities(predict_rpart)
@@ -265,5 +267,4 @@ bg <-  prob[sick_test[,"Class"] == 0]
 pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
 plot(pr)
 pr$auc.integral
-
 ```
