@@ -37,23 +37,25 @@
 
 * 2020-04-17 - prezentacja PD1 + praca domowa 2: https://us04web.zoom.us/j/2254905395
 
-* 2020-04-24 - projekt
+* 2020-04-24 - projekt: wstęp, literatura
 
-* 2020-04-29 - prezentacja PD2 + projekt
+* 2020-04-29 - prezentacja PD2 + projekt: metodologia
 
-* 2020-05-01 - projekt
-
-* 2020-05-08 - projekt
+* 2020-05-08 - projekt: checkpoint: metodologia i wstęp
 
 * 2020-05-12 - projekt
 
 * 2020-05-15 - projekt
 
-* 2020-05-22 - projekt
+** 2020-05-21 - Lighting talk na wykładzie artykułu
 
-* 2020-05-29 - ?
+* 2020-05-22 - projekt: poprawki
 
-* 2020-06-05 - ?
+** 2020-05-28 - wykład: blog
+
+* 2020-05-29 - artykuł
+
+* 2020-06-05 - artykuł
 
 ## Prezentacje (15 pkt.)
 
