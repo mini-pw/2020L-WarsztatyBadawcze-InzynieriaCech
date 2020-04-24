@@ -10,6 +10,7 @@
     
     Warto zobaczyć:
     - [Limitations of Interpretable Machine Learning Methods](https://compstat-lmu.github.io/iml_methods_limitations/)
+    - [Interpretable Machine Learning. A Guide for Making Black Box Models Explainable(https://christophm.github.io/interpretable-ml-book/index.html)
 
 * 2020-03-06 - OpenML - wybór i analiza zbiorów danych
 
