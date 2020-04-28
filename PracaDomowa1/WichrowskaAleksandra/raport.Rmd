@@ -106,7 +106,7 @@ So I decided to delete one of them.
 Now we can split our dataset to train and test subsets (with `indeksy-trenignowe.txt` file)
 
 ```{r split}
-split_index <- read.csv('indeksy_treningowe.txt', sep = ' ', row.names = 1, header = TRUE)$x
+split_index <- read.csv2('indeksy_treningowe.txt')$x
 sick_train <- dataset[split_index,]
 sick_test <- dataset[-split_index,]
 ```
@@ -192,6 +192,7 @@ for(col in columns_missing){
 ```
 
 ```{r rpart2, echo=FALSE, include=FALSE}
+task = makeClassifTask(data=sick_train, target="Class", positive="1")
 learner2 = makeLearner("classif.rpart", predict.type = "prob")
 r = resample(learner2, task, cv5, list(mlr::auc, auprc))
 ```
@@ -232,8 +233,8 @@ After imputation we  have a better model performance. I tried also some other me
 
 I tried also tuning of hyperparameters.
 ```{r params,  echo=FALSE, include=FALSE}
-learner_rpart = makeLearner("classif.rpart", predict.type='prob')
 task_rpart = makeClassifTask(data=sick_train, target="Class", positive="1")
+learner_rpart = makeLearner("classif.rpart", predict.type='prob')
 parameters = makeParamSet(
   makeIntegerParam("maxdepth", lower = 1, upper = 30),
   makeIntegerParam("minsplit", lower = 1, upper = 30),
@@ -244,7 +245,7 @@ cv <-  makeResampleDesc("CV", iters = 5L)
 results <- tuneParams(learner_rpart, task = task_rpart, resampling = cv,  par.set = parameters, control = ctrl, measures = list(mlr::auc), show.info = FALSE)
 
 learner_rpart_tuned <- setHyperPars(learner_rpart, minsplit=results$x$minsplit, cp=results$x$cp, maxdepth=results$x$maxdepth)
-r = resample(learner_rpart_tuned, task, cv5, list(mlr::auc, auprc))
+r = resample(learner_rpart_tuned, task_rpart, cv5, list(mlr::auc, auprc))
 ```
 
 ```{r result4, include=TRUE}
@@ -256,7 +257,7 @@ r$aggr
 
 
 ```{r test,  include=TRUE}
-model_rpart <- train(learner_rpart_tuned, task)
+model_rpart <- train(learner_rpart_tuned, task_rpart)
 predict_rpart <- predict(model_rpart, newdata = sick_test)
 prob <- getPredictionProbabilities(predict_rpart)
 fg <- prob[sick_test[,"Class"] == 1]
@@ -265,5 +266,4 @@ bg <-  prob[sick_test[,"Class"] == 0]
 pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
 plot(pr)
 pr$auc.integral
-
 ```

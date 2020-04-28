@@ -3,12 +3,13 @@ title: "Analysis of 'sick' dataset"
 author: "Mateusz Bakala"
 date: "2020, 15 of April"
 output:
+  pdf_document: default
   html_document:
     df_print: paged
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, cache.lazy = FALSE)
 # courtesy of we-all-know-who
 # devtools::install_github("DominikRafacz/auprc")
 library(auprc)
@@ -102,13 +103,12 @@ data_test <- knnImputation(data_test, k = 15, distData = data_train)
 
 ## Tuning and training
 
-For heavily imbalanced two-class classification a safe choice would be random forest-esque model. We have no way of getting more data, so we have to work with what we have. Ranger was chosen for its availability in `mlr3` package.
+For heavily imbalanced two-class classification a safe choice would be forest-esque model. We have no way of getting more data, so we have to work with what we have. Rpart was chosen for its availability in `mlr3` package.
 
 We shall tune two of three worthy parameters of our model, as we should allow node size equal to `1` due to heavy imbalance. We will use random search because GenSA algorythm demands non-discrete values (as an optimalization problem) and grid search is awful. Also, five-fold cross-validation, as demanded. AUPRC as measure registered thanks to stellar Dominik Rafacz's job with his `auprc` package.
 
-```{r tuning, cache=TRUE, include=FALSE, eval=FALSE}
-# somehow knitting that were throwing a wide range of errors, so I decided to evaluate it and save by myself
-learner <- lrn("classif.ranger", predict_type = "prob")
+```{r tuning, cache=TRUE, results=FALSE}
+learner <- lrn("classif.rpart", predict_type = "prob")
 task <- TaskClassif$new(id = "data",
                         backend = rbind(data_train, data_test),
                         target = target,
@@ -116,8 +116,8 @@ task <- TaskClassif$new(id = "data",
 resampling <- rsmp("cv", folds = 5)
 measure <- msr("classif.auc")
 tune_ps <- ParamSet$new(list(
-  ParamInt$new("num.trees", lower = 250, upper = 3000),
-  ParamInt$new("mtry", lower = 1, upper = 4)
+  ParamDbl$new("cp", lower = 0.001, upper = 0.05),
+  ParamInt$new("maxdepth", lower = 3, upper = 10)
 ))
 terminator = term("evals", n_evals = 100)
 
@@ -140,18 +140,14 @@ prediction1 <- learner$train(
 
 ## Prediction
 
-We tried to use non-tuned ranger on non-modified data for comparison, but then realized that with missing data it's impossible... so no comparison then. What's the score though?
+We tried to use non-tuned rpart on non-modified data for comparison, but then realized that with missing data it's impossible... so no comparison then. What's the score though?
 
 ```{r score, cache=TRUE}
-learner <- readRDS("learner.rds")
-# again, it seems that R6 and mlr3 are not really tested yet
-# prediction1 <- readRDS("prediction.rds")
-prob <- readRDS("prob.rds")
-auprc(prob, data_test$Class, "sick")
+auprc(prediction1$prob[, "sick"], data_test$Class, "sick")
 ```
 
 ```{r auprc, echo=FALSE}
-precision_recall_curve(prob, data_test$Class, "sick")
+precision_recall_curve(prediction1$prob[, "sick"], data_test$Class, "sick")
 ```
 
 Is it any good? We shall see once we can compare with others. But don't hold your hopes high, it's unlikely.
