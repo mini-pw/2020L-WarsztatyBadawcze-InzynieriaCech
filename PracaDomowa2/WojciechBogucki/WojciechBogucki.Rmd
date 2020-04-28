@@ -1,0 +1,158 @@
+---
+title: "Sick dataset analysis part 2"
+author: "Wojciech Bogucki"
+date: "`r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(funModeling)
+library(mlr)
+library(auprc)
+library(mice)
+
+```
+
+```{r data, include = FALSE}
+
+set.seed(10)
+
+# download data
+data <- getOMLDataSet(data.id=38)
+sick <- data$data
+train_idx <- read.table("../../PracaDomowa1/indeksy_treningowe.txt", sep=" ", header = TRUE)$x
+test_idx <- setdiff(1:3772, train_idx)
+sick_train <- sick[train_idx,]
+sick_test <- sick[test_idx,]
+
+```
+
+```{r data preparation, warning=FALSE, echo=FALSE}
+sick_train <- sick_train %>% select(c(-TBG, -TBG_measured, -hypopituitary))
+sick_test <- sick_test %>% select(c(-TBG, -TBG_measured, -hypopituitary))
+
+sick_train <- sick_train %>% mutate(age=replace(age, age>130 | age<0, NA))
+sick_test <- sick_test %>% mutate(age=replace(age, age>130 | age<0, NA))
+```
+
+```{r imputation}
+sick_train_mice <- mice(sick_train, printFlag = FALSE)
+sick_train_imp <- complete(sick_train_mice)
+n <- nrow(sick_test)
+sick_all <- rbind(sick_test, sick_train_imp)
+sick_all_mice <- mice(sick_test[,-27], printFlag = FALSE)
+sick_all_imp <- complete(sick_all_mice)
+sick_test_imp <- cbind(sick_all_imp[1:n,], Class=sick_test$Class)
+```
+
+```{r rpart}
+# decision trees with missing values
+task_rpart_mis<- makeClassifTask("task_rpart", data=sick_train, target = "Class")
+learner_rpart_mis <- makeLearner("classif.rpart", predict.type = 'prob')
+cv_rpart_mis <- crossval(learner_rpart_mis, task_rpart_mis,iters = 5,measures = list(auc))
+model_rpart_mis <- train(learner_rpart_mis, task_rpart_mis)
+pred_rpart_mis <- predict(model_rpart_mis, newdata = sick_test)
+
+# decision trees with missing values with tune
+learner_rpart_mis_tune <-  setHyperPars(learner_rpart_mis, minsplit=21, minbucket=7, cp=0.000367)
+cv_rpart_mis_tune <- crossval(learner_rpart_mis_tune, task_rpart_mis,iters = 5,measures = list(auc))
+model_rpart_mis_tune <- train(learner_rpart_mis_tune, task_rpart_mis)
+pred_rpart_mis_tune <- predict(model_rpart_mis_tune, newdata = sick_test)
+```
+
+```{r}
+# ranger
+task_ranger<- makeClassifTask("task_ranger", data=sick_train_imp, target = "Class")
+learner_ranger <- makeLearner("classif.ranger", predict.type = 'prob')
+cv_ranger <- crossval(learner_ranger, task_ranger,iters = 5,measures = list(auc))
+set.seed(10, "L'Ecuyer")
+model_ranger <- train(learner_ranger, task_ranger)
+pred_ranger <- predict(model_ranger, newdata = sick_test_imp)
+
+# ranger with tune
+learner_ranger_tune <-  setHyperPars(learner_ranger, 
+                                mtry=7, 
+                                min.node.size=3, 
+                                splitrule='gini', 
+                                replace=FALSE)
+cv_ranger_tune <- crossval(learner_ranger_tune, task_ranger,iters = 5,measures = list(auc))
+set.seed(10, "L'Ecuyer")
+model_ranger_tune <- train(learner_ranger_tune, task_ranger)
+pred_ranger_tune <- predict(model_ranger_tune, newdata = sick_test_imp)
+```
+
+```{r}
+task_gbm <- makeClassifTask("task_gbm", data=sick_train, target = "Class")
+learner_gbm <- makeLearner("classif.gbm", predict.type = 'prob')
+cv_gbm <- crossval(learner_gbm, task_gbm,iters = 5,measures = list(auc))
+set.seed(10, "L'Ecuyer")
+model_gbm <- train(learner_gbm, task_gbm)
+pred_gbm <- predict(model_gbm, newdata = sick_test)
+
+
+learner_gbm_tune <-  setHyperPars(learner_gbm, n.trees=169, 
+                             interaction.depth=3, 
+                             n.minobsinnode=4, 
+                             distribution='gaussian',
+                             shrinkage=0.0932)
+cv_gbm_tune <- crossval(learner_gbm_tune, task_gbm,iters = 5,measures = list(auc))
+set.seed(10, "L'Ecuyer")
+model_gbm_tune <- train(learner_gbm_tune, task_gbm)
+pred_gbm_tune <- predict(model_gbm_tune, newdata = sick_test)
+```
+
+```{r}
+indx <- sapply(sick_train[,-27], is.factor)
+sick_train_num <- sick_train
+sick_train_num[indx] <- lapply(sick_train[indx], function(x) as.numeric(x)-1)
+sick_test_num <- sick_test
+sick_test_num[indx] <- lapply(sick_test[indx], function(x) as.numeric(x)-1)
+
+# xgboost
+task_xgb <- makeClassifTask("task_xgb", data=sick_train_num, target = "Class")
+learner_xgb <- makeLearner("classif.xgboost", predict.type = 'prob')
+cv_xgb <- crossval(learner_xgb, task_xgb,iters = 5,measures = list(auc))
+model_xgb <- train(learner_xgb, task_xgb)
+pred_xgb <- predict(model_xgb, newdata = sick_test_num)
+
+# xgboost with tune
+learner_xgb_tune <-  setHyperPars(learner_xgb, 
+                             min_child_weight=4.97, 
+                             max_depth=4, 
+                             gamma=3.86, 
+                             eta=0.374)
+cv_xgb_tune <- crossval(learner_xgb_tune, task_xgb,iters = 5,measures = list(auc))
+model_xgb_tune <- train(learner_xgb_tune, task_xgb)
+pred_xgb_tune <- predict(model_xgb_tune, newdata = sick_test_num)
+```
+
+```{r}
+preds <- list(pred_rpart_mis,pred_rpart_mis_tune,pred_ranger,pred_ranger_tune,pred_gbm,pred_gbm_tune,pred_xgb,pred_xgb_tune)
+mods <- c( "Decision trees","Decision trees with tune", "Ranger","Ranger with tune","Gradient Boosting Machine","Gradient Boosting Machine with tune","Xgboost","Xgboost with tune")
+n_mods <- length(mods)
+perf_auc <- list()
+perf_auprc <- list()
+perf_rocr <- list()
+for (i in 1:n_mods){
+  perf_auc[i] <- performance(preds[[i]],list(auc))
+  perf_auprc[i] <- auprc(preds[[i]]$data$prob.sick, sick_test_imp$Class, "sick")
+  pred2 <- ROCR::prediction(as.vector(preds[[i]]$data$prob.sick), as.vector(preds[[i]]$data$truth))
+  perf_rocr[i] <- ROCR::performance(pred2,"tpr","fpr")
+}
+
+kable(data.frame(model=mods,'auc 5-crossvalidation'=c(cv_rpart_mis$aggr,cv_rpart_mis_tune$aggr, cv_ranger$aggr, cv_ranger_tune$aggr, cv_gbm$aggr,cv_gbm_tune$aggr,cv_xgb$aggr,cv_xgb_tune$aggr),auc=unlist(perf_auc),auprc=unlist(perf_auprc)), caption="Measures of goodness of prediction for each model")%>%
+  kable_styling(latex_options = "hold_position")
+```
+
