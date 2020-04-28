@@ -22,6 +22,7 @@ library(funModeling)
 library(mlr)
 library(auprc)
 library(mice)
+library(ggplot2)
 
 ```
 
@@ -38,8 +39,10 @@ sick_train <- sick[train_idx,]
 sick_test <- sick[test_idx,]
 
 ```
-
-```{r data preparation, warning=FALSE, echo=FALSE}
+\newpage
+# Prepared dataset
+For my analysis I once again used dataset *sick* with previous transormations: I removed three columns which gave no information and added constraint for age to avoid human mistakes.
+```{r data preparation, warning=FALSE}
 sick_train <- sick_train %>% select(c(-TBG, -TBG_measured, -hypopituitary))
 sick_test <- sick_test %>% select(c(-TBG, -TBG_measured, -hypopituitary))
 
@@ -47,7 +50,8 @@ sick_train <- sick_train %>% mutate(age=replace(age, age>130 | age<0, NA))
 sick_test <- sick_test %>% mutate(age=replace(age, age>130 | age<0, NA))
 ```
 
-```{r imputation}
+As a reminder, I also created dataset with imputed missing values because some models required it. For imputation I used package `mice`. 
+```{r imputation, warning=FALSE, echo=FALSE, cache=TRUE}
 sick_train_mice <- mice(sick_train, printFlag = FALSE)
 sick_train_imp <- complete(sick_train_mice)
 n <- nrow(sick_test)
@@ -55,9 +59,52 @@ sick_all <- rbind(sick_test, sick_train_imp)
 sick_all_mice <- mice(sick_test[,-27], printFlag = FALSE)
 sick_all_imp <- complete(sick_all_mice)
 sick_test_imp <- cbind(sick_all_imp[1:n,], Class=sick_test$Class)
+imp_met <- sick_train_mice$method[c("sex","TSH","T3","TT4","T4U","FTI")]
+imp_met[imp_met=='pmm'] <- "Predictive mean matching"
+imp_met[imp_met=='logreg'] <- "Logistic regression"
+var_nam <- names(imp_met)
+names(imp_met) <- NULL
+kable(cbind(var_nam,imp_met),col.names = c('variable','imputaton method'),caption = "Impuation method for each variable")%>%
+  kable_styling(latex_options = "hold_position")
 ```
 
-```{r rpart}
+# Used models
+In my previous analysis I used only interpretable models. Decision tree model from package `part` had best AUPRC score. With this model I compared three new so called 'black box' models:
+
+* Random Forest (package `ranger`)
+* Gradient Boosting Machine (package `gbm`)
+* XGBoost (package `xgboost`)
+
+## Different versions of dataset
+Different models have different requirements and limitations for input data. Decision tree and Gradient Boostting Machine models accept missing values in dataset so I used normal data after transformations. For Random Forest I used dataset with imputed missing values. Lastly, XGBoost accepts only numeric data, so I changed factors to numeric values.
+
+\newpage
+
+## Tuning model's hyperparameters
+On every model I performed hyperparameter tuning with package `mlr`.
+```{r, echo=FALSE}
+kable(data.frame(minsplit=21, minbucket=7, cp=0.000367), caption="Hyperparameters after tuning for ")%>%
+  kable_styling(latex_options = "hold_position")
+kable(data.frame(n.trees=169, 
+                             interaction.depth=3, 
+                             n.minobsinnode=4, 
+                             distribution='gaussian',
+                             shrinkage=0.0932), caption="Hyperparameters after tuning for Gradient Boosting Machine")%>%
+  kable_styling(latex_options = "hold_position")
+kable(data.frame(mtry=7, 
+                                min.node.size=3, 
+                                splitrule='gini', 
+                                replace=FALSE), caption="Hyperparameters after tuning for Random Forest")%>%
+  kable_styling(latex_options = "hold_position")
+kable(data.frame(min_child_weight=4.97, 
+                             max_depth=4, 
+                             gamma=3.86, 
+                             eta=0.374), caption="Hyperparameters after tuning for XGBoost")%>%
+  kable_styling(latex_options = "hold_position")
+
+```
+
+```{r rpart, include=FALSE}
 # decision trees with missing values
 task_rpart_mis<- makeClassifTask("task_rpart", data=sick_train, target = "Class")
 learner_rpart_mis <- makeLearner("classif.rpart", predict.type = 'prob')
@@ -70,9 +117,7 @@ learner_rpart_mis_tune <-  setHyperPars(learner_rpart_mis, minsplit=21, minbucke
 cv_rpart_mis_tune <- crossval(learner_rpart_mis_tune, task_rpart_mis,iters = 5,measures = list(auc))
 model_rpart_mis_tune <- train(learner_rpart_mis_tune, task_rpart_mis)
 pred_rpart_mis_tune <- predict(model_rpart_mis_tune, newdata = sick_test)
-```
 
-```{r}
 # ranger
 task_ranger<- makeClassifTask("task_ranger", data=sick_train_imp, target = "Class")
 learner_ranger <- makeLearner("classif.ranger", predict.type = 'prob')
@@ -91,9 +136,8 @@ cv_ranger_tune <- crossval(learner_ranger_tune, task_ranger,iters = 5,measures =
 set.seed(10, "L'Ecuyer")
 model_ranger_tune <- train(learner_ranger_tune, task_ranger)
 pred_ranger_tune <- predict(model_ranger_tune, newdata = sick_test_imp)
-```
 
-```{r}
+# gradient boosting machine
 task_gbm <- makeClassifTask("task_gbm", data=sick_train, target = "Class")
 learner_gbm <- makeLearner("classif.gbm", predict.type = 'prob')
 cv_gbm <- crossval(learner_gbm, task_gbm,iters = 5,measures = list(auc))
@@ -101,7 +145,7 @@ set.seed(10, "L'Ecuyer")
 model_gbm <- train(learner_gbm, task_gbm)
 pred_gbm <- predict(model_gbm, newdata = sick_test)
 
-
+# gradient boosting machine with tune
 learner_gbm_tune <-  setHyperPars(learner_gbm, n.trees=169, 
                              interaction.depth=3, 
                              n.minobsinnode=4, 
@@ -111,16 +155,15 @@ cv_gbm_tune <- crossval(learner_gbm_tune, task_gbm,iters = 5,measures = list(auc
 set.seed(10, "L'Ecuyer")
 model_gbm_tune <- train(learner_gbm_tune, task_gbm)
 pred_gbm_tune <- predict(model_gbm_tune, newdata = sick_test)
-```
 
-```{r}
+# XGBoost
 indx <- sapply(sick_train[,-27], is.factor)
 sick_train_num <- sick_train
 sick_train_num[indx] <- lapply(sick_train[indx], function(x) as.numeric(x)-1)
 sick_test_num <- sick_test
 sick_test_num[indx] <- lapply(sick_test[indx], function(x) as.numeric(x)-1)
 
-# xgboost
+
 task_xgb <- makeClassifTask("task_xgb", data=sick_train_num, target = "Class")
 learner_xgb <- makeLearner("classif.xgboost", predict.type = 'prob')
 cv_xgb <- crossval(learner_xgb, task_xgb,iters = 5,measures = list(auc))
@@ -138,9 +181,17 @@ model_xgb_tune <- train(learner_xgb_tune, task_xgb)
 pred_xgb_tune <- predict(model_xgb_tune, newdata = sick_test_num)
 ```
 
-```{r}
+# Comparison of prediction measures
+As in previous analysis, I calculated measures of goodness of predicton: agggregated AUC from 5-fold crossvalidation on training set, AUC on test set and AUPRC on test set. Results are presented in Table \ref{tab:pred measures}.
+
+```{r pred measures, echo=FALSE, warning=FALSE}
 preds <- list(pred_rpart_mis,pred_rpart_mis_tune,pred_ranger,pred_ranger_tune,pred_gbm,pred_gbm_tune,pred_xgb,pred_xgb_tune)
-mods <- c( "Decision trees","Decision trees with tune", "Ranger","Ranger with tune","Gradient Boosting Machine","Gradient Boosting Machine with tune","Xgboost","Xgboost with tune")
+mods <- c( "Decision trees","Decision trees with tune", 
+           "Ranger","Ranger with tune",
+           "Gradient Boosting Machine",
+           "Gradient Boosting Machine with tune",
+           "XGBoost",
+           "XGBoost with tune")
 n_mods <- length(mods)
 perf_auc <- list()
 perf_auprc <- list()
@@ -151,8 +202,33 @@ for (i in 1:n_mods){
   pred2 <- ROCR::prediction(as.vector(preds[[i]]$data$prob.sick), as.vector(preds[[i]]$data$truth))
   perf_rocr[i] <- ROCR::performance(pred2,"tpr","fpr")
 }
+comp <- data.frame(model=mods,'auc 5-crossvalidation'=round(c(cv_rpart_mis$aggr,cv_rpart_mis_tune$aggr, cv_ranger$aggr, cv_ranger_tune$aggr, cv_gbm$aggr,cv_gbm_tune$aggr,cv_xgb$aggr,cv_xgb_tune$aggr),3),auc=round(unlist(perf_auc),3),auprc=round(unlist(perf_auprc),3))
 
-kable(data.frame(model=mods,'auc 5-crossvalidation'=c(cv_rpart_mis$aggr,cv_rpart_mis_tune$aggr, cv_ranger$aggr, cv_ranger_tune$aggr, cv_gbm$aggr,cv_gbm_tune$aggr,cv_xgb$aggr,cv_xgb_tune$aggr),auc=unlist(perf_auc),auprc=unlist(perf_auprc)), caption="Measures of goodness of prediction for each model")%>%
+kable(comp, caption="Measures of goodness of prediction for each model", col.names = c("model","AUC on 5-fold crossvalidation","AUC on test data","AUPRC on test data"))%>%
   kable_styling(latex_options = "hold_position")
+
+
 ```
 
+
+```{r comp, echo=FALSE, fig.align='center', fig.width=8, fig.height=6, fig.cap="Models comparison"}
+comp <- reshape2::melt(comp, 'model')
+comp2 <- comp %>% arrange(variable,-value)
+ggplot(data = comp2, aes(fill=model, x=variable, y=value)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  ggtitle("Measures of goodness of prediction for each model") + 
+  xlab("Measure") + 
+  ylab("Score") + 
+  scale_fill_brewer(palette="Dark2") +
+  scale_y_continuous(minor_breaks = seq(0 , 1, 0.05), breaks = seq(0, 1, 0.1))
+```
+
+\newpage
+# Conclusion
+On Figure \ref{fig:comp} we can notice that:
+
+* On training dataset ranger models achieve the best results(over 0.99)
+* On test dataset Gradint Boosting Machine model with tuned hyperparameters has the best AUC and AUPRC measures
+* Surprisingly, GBM model with default hyperparametres has the worst AUPRC result(even worse than decision tree model)
+* Generally, black box models performed better than interpretable model in this case but decision tree model with tuned hyperparameters has AUPRC score comparable with black box models
+* Only for XGBoost model hyperparameters tuning yields worse results
