@@ -10,6 +10,7 @@
     
     Warto zobaczyć:
     - [Limitations of Interpretable Machine Learning Methods](https://compstat-lmu.github.io/iml_methods_limitations/)
+    - [Interpretable Machine Learning A Guide for Making Black Box Models Explainable](https://christophm.github.io/interpretable-ml-book/index.html)
 
 * 2020-03-06 - OpenML - wybór i analiza zbiorów danych
 
@@ -35,25 +36,27 @@
 
 * 2020-04-03 - problem niezbalansowanych klas + bookdown + praca domowa 1
 
-* 2020-04-17 - prezentacja PD1 + praca domowa 2
+* 2020-04-17 - prezentacja PD1 + praca domowa 2: https://us04web.zoom.us/j/2254905395
 
-* 2020-04-24 - projekt
+* 2020-04-24 - projekt: wstęp, literatura
 
-* 2020-04-29 - prezentacja PD2 + projekt
+* 2020-04-29 - prezentacja PD2 + projekt: metodologia
 
-* 2020-05-01 - projekt
-
-* 2020-05-08 - projekt
+* 2020-05-08 - projekt: checkpoint: metodologia i wstęp
 
 * 2020-05-12 - projekt
 
 * 2020-05-15 - projekt
 
-* 2020-05-22 - projekt
+** 2020-05-21 - Lighting talk na wykładzie artykułu
 
-* 2020-05-29 - ?
+* 2020-05-22 - projekt: poprawki
 
-* 2020-06-05 - ?
+** 2020-05-28 - wykład: blog
+
+* 2020-05-29 - artykuł
+
+* 2020-06-05 - artykuł
 
 ## Prezentacje (15 pkt.)
 
@@ -61,13 +64,17 @@ Należy przygotować prezentację na jeden z uzgodnionych tematów.
 
 ## Prace domowe (15 pkt.)
 
-### Praca domowa 1 
+### Praca domowa 1 (10pkt)
 
 * Pracę domową należy wykonać pojedynczo. Na podstawie zbioru danych „sick" dostępnych w zbiorze OpenML należy wykonać analizę eksploracyjną oraz zbudować interpretowalny model klasyfikacyjny przewidujący czy pacjent jest chory czy zdrowy. Powinna zostać użyta 5-krotna kroswalidacja do znalezienia odpowiedniego modelu na zbiorze treningowym i wyliczone dwie miary na zbiorze testowym: AUC i AUPRC. Do podziału zbioru na zbiór treningowy i testowy, proszę użyć dostępnych indeksów zbioru treningowego w folderze 'Praca domowa 1'.
 
-* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa1/ImieNazwisko do 17.04 do godz. 10 oraz zaprezentowana (max. 10 minut) podczas zajęć 17.04. 
+* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa1/ImieNazwisko do 17.04 do godz. 10 oraz zaprezentowana (max. 5 minut) podczas zajęć 17.04. 
 
-### Praca domowa 2
+### Praca domowa 2 (5pkt)
+
+* Pracę domową należy wykonać pojedynczo, praca jest kontynuacją pracy domowej 1. Należy dodać model czarnej skrzynki przewidujący czy pacjent jest chory czy zdrowy. Powinna zostać użyta 5-krotna kroswalidacja do znalezienia odpowiedniego modelu na zbiorze treningowym i wyliczone dwie miary na zbiorze testowym: AUC i AUPRC. Wyniki należy porównać z wynikami modelu z pracy domowej 1. Do podziału zbioru na zbiór treningowy i testowy, proszę użyć dostępnych indeksów zbioru treningowego w folderze 'Praca domowa 1'. 
+
+* Praca w formie raportu .pdf i .Rmd w języku angielskim powinna być zamieszczona w folderze https://github.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/tree/master/PracaDomowa2/ImieNazwisko do 29.04 do godz. 10 oraz zaprezentowana (max. 5 minut) podczas zajęć 29.04. 
 
 ## Projekt (55 pkt.)
 
