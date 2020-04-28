@@ -1,0 +1,270 @@
+---
+title: "Sick dataset analysis"
+author: "Wojciech Bogucki"
+date: "`r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(funModeling)
+library(mlr)
+library(auprc)
+library(mice)
+
+```
+
+```{r data, include = FALSE}
+
+set.seed(10)
+
+# download data
+data <- getOMLDataSet(data.id=38)
+sick <- data$data
+train_idx <- read.table("../indeksy_treningowe.txt", sep=" ", header = TRUE)$x
+test_idx <- setdiff(1:3772, train_idx)
+sick_train <- sick[train_idx,]
+sick_test <- sick[test_idx,]
+
+```
+\newpage
+# Explanatory Data Analysis
+## First look at raw data
+Firstly, let's have a look at selected training data from the original dataset *sick*:
+```{r raw data, warning=F, echo=FALSE}
+kable(t(introduce(sick_train)[-9]), caption = "Features of dataset sick") %>%
+  kable_styling(latex_options = "hold_position")
+  kable(df_status(sick_train, print_results = FALSE), caption = "Metrics for each variable of dataset sick") %>%
+    kable_styling(latex_options = "hold_position")
+  
+```
+
+As we can see in the table, variable `TBG` has 100% missing values and variables `TBG_measured` and `hypopituitary` have only one unique value. Therefore, I removed this three variables from training and test datasets.
+```{r removing columns, warning=FALSE, echo=FALSE}
+sick_train <- sick_train %>% select(c(-TBG, -TBG_measured, -hypopituitary))
+sick_test <- sick_test %>% select(c(-TBG, -TBG_measured, -hypopituitary))
+```
+
+Our target class 'Class' is very imbalanced.
+```{r warning=FALSE}
+freq(sick_train, input=c('Class'))
+```
+
+## Mistakes in data
+When we look closely at the continuous variables in test dataset, we can observe that age variable has some big values.
+```{r, echo=FALSE, fig.align='left'}
+plot_histogram(sick_test[,'age'])
+```
+
+```{r, echo=FALSE}
+describe(sick[,'age'])
+```
+Age for one observation is 455, which is obviously a mistake. To avoid such mistakes data will be filtrated. Impossible age values will be changed to missing values.
+```{r change}
+sick_train <- sick_train %>% mutate(age=replace(age, age>130 | age<0, NA))
+sick_test <- sick_test %>% mutate(age=replace(age, age>130 | age<0, NA))
+```
+
+## Missing data
+Dataset contains some missing values.
+```{r missings, echo=FALSE, fig.align='left', fig.height=6}
+
+plot_missing(sick_train,title = "Percent of missing values in training dataset")
+plot_missing(sick_test,title = "Percent of missing values in test dataset")
+
+```
+
+## Imputation
+To eliminate missing data in training set I used package `mice`.
+```{r imputation, fig.align='left', fig.height=7, warning=FALSE, echo=FALSE}
+sick_train_mice <- mice(sick_train, printFlag = FALSE)
+sick_train_imp <- complete(sick_train_mice)
+imp_met <- sick_train_mice$method[c("sex","TSH","T3","TT4","T4U","FTI")]
+imp_met[imp_met=='pmm'] <- "Predictive mean matching"
+imp_met[imp_met=='logreg'] <- "Logistic regression"
+var_nam <- names(imp_met)
+names(imp_met) <- NULL
+kable(cbind(var_nam,imp_met),col.names = c('variable','imputaton method'),caption = "Impuation method for each variable")%>%
+  kable_styling(latex_options = "hold_position")
+plot_missing(sick_train_imp,title = "Percent of missing values \nfor each variable in traning dataset")
+
+```
+Then I performed imputation on dataset containing training data after imputation and test data.
+
+```{r imputation test, fig.align='left', fig.height=6, warning=FALSE, echo=FALSE}
+n <- nrow(sick_test)
+sick_all <- rbind(sick_test, sick_train_imp)
+sick_all_mice <- mice(sick_test[,-27], printFlag = FALSE)
+sick_all_imp <- complete(sick_all_mice)
+sick_test_imp <- cbind(sick_all_imp[1:n,], Class=sick_test$Class)
+imp_met <- sick_all_mice$method[c("age","sex","TSH","T3","TT4","T4U","FTI")]
+imp_met[imp_met=='pmm'] <- "Predictive mean matching"
+imp_met[imp_met=='logreg'] <- "Logistic regression"
+var_nam <- names(imp_met)
+names(imp_met) <- NULL
+kable(cbind(var_nam,imp_met),col.names = c('variable','imputaton method'),caption = "Impuation method for each variable")%>%
+  kable_styling(latex_options = "hold_position")
+plot_missing(sick_test_imp,title = "Percent of missing values for each variable in test dataset")
+```
+
+\newpage
+# Creating models
+For prediction I chose three interpretable models:
+
+* logistic regression
+* decision tree
+* naive Bayes
+
+Also decision tree and naive Bayes will be trained on dataset with missing values.
+
+## Training
+```{r train, warning=FALSE, include=FALSE}
+# logistic regression
+task_logreg <- makeClassifTask("task_logreg", data=sick_train_imp, target = "Class")
+learner_logreg <- makeLearner("classif.logreg", predict.type = 'prob')
+cv_logreg <- crossval(learner_logreg, task_logreg,iters = 5,measures = list(auc))
+model_logreg <- train(learner_logreg, task_logreg)
+pred_logreg <- predict(model_logreg, newdata = sick_test_imp)
+# decision trees
+task_rpart<- makeClassifTask("task_rpart", data=sick_train_imp, target = "Class")
+learner_rpart <- makeLearner("classif.rpart", predict.type = 'prob')
+# hyperparameters tuning
+rpart_ps <-  makeParamSet(
+  makeIntegerParam("minsplit", lower=1, upper=50, default = 20),
+  makeIntegerParam("minbucket", lower=1, upper=30),
+  makeNumericParam("cp", lower=0, upper = 1, default = 0.01)
+)
+ctrl <-  makeTuneControlRandom(maxit = 100L)
+rdesc <-  makeResampleDesc("CV", iters = 5L)
+res <-  tuneParams(learner_rpart, task = task_rpart, resampling = rdesc,
+                 par.set = rpart_ps, control = ctrl, measures = list(acc,auc), show.info = FALSE)
+learner_rpart <-  setHyperPars(learner_rpart, minsplit=res$x$minsplit, minbucket=res$x$minbucket, cp=res$x$cp)
+cv_rpart <- crossval(learner_rpart, task_rpart,iters = 5,measures = list(auc))
+model_rpart <- train(learner_rpart, task_rpart)
+pred_rpart <- predict(model_rpart, newdata = sick_test)
+# naive bayes
+task_nb<- makeClassifTask("task_nb", data=sick_train_imp, target = "Class")
+learner_nb <- makeLearner("classif.naiveBayes", predict.type = 'prob')
+cv_nb <- crossval(learner_nb, task_nb,iters = 5,measures = list(auc))
+model_nb <- train(learner_nb, task_nb)
+pred_nb <- predict(model_nb, newdata = sick_test)
+
+# decision trees with missing values
+task_rpart_mis<- makeClassifTask("task_rpart", data=sick_train, target = "Class")
+learner_rpart_mis <- makeLearner("classif.rpart", predict.type = 'prob')
+
+
+rpart_ps_mis = makeParamSet(
+  makeIntegerParam("minsplit", lower=1, upper=50, default = 20),
+  makeIntegerParam("minbucket", lower=1, upper=30),
+  makeNumericParam("cp", lower=0, upper = 1, default = 0.01)
+)
+
+res_mis <-  tuneParams(learner_rpart_mis, task = task_rpart_mis, resampling = rdesc,
+                   par.set = rpart_ps_mis, control = ctrl, measures = list(acc,auc), show.info = FALSE)
+learner_rpart_mis <-  setHyperPars(learner_rpart_mis, minsplit=res_mis$x$minsplit, minbucket=res_mis$x$minbucket, cp=res_mis$x$cp)
+cv_rpart_mis <- crossval(learner_rpart_mis, task_rpart_mis,iters = 5,measures = list(auc))
+model_rpart_mis <- train(learner_rpart_mis, task_rpart_mis)
+pred_rpart_mis <- predict(model_rpart_mis, newdata = sick_test)
+
+
+# naive bayes with missing values
+task_nb_mis<- makeClassifTask("task_nb", data=sick_train, target = "Class")
+learner_nb_mis <- makeLearner("classif.naiveBayes", predict.type = 'prob')
+cv_nb_mis <- crossval(learner_nb_mis, task_nb_mis,iters = 5,measures = list(auc))
+model_nb_mis <- train(learner_nb_mis, task_nb_mis)
+pred_nb_mis <- predict(model_nb_mis, newdata = sick_test)
+
+
+
+preds <- list(pred_logreg,pred_rpart,pred_nb,pred_rpart_mis,pred_nb_mis)
+```
+
+During training I performed hyperparameters tuning on decision tree. These hyperparameteres were used:
+
+* Decision tree:
+```{r echo=FALSE}
+print(res$x)
+```
+
+* Decision tree with missing values:
+
+```{r echo=FALSE}
+print(res_mis$x)
+```
+
+## Measures
+
+Next, I calculated measures of goodness of predicton: agggregated AUC from 5-fold crossvalidation on training set, AUC on test set and AUPRC on test set. I also created a comparison of ROC curve and precision-recall plot for each model.
+```{r measures, warning=FALSE, echo=FALSE}
+#measures
+mods <- c("Logistic regression", "Decision trees","Naive Bayes", "Decision trees with missing values","Naive Bayes with missing values")
+n_mods <- length(mods)
+perf_auc <- list()
+perf_auprc <- list()
+perf_rocr <- list()
+for (i in 1:n_mods){
+  perf_auc[i] <- performance(preds[[i]],list(auc))
+  perf_auprc[i] <- auprc(preds[[i]]$data$prob.sick, sick_test_imp$Class, "sick")
+  pred2 <- ROCR::prediction(as.vector(preds[[i]]$data$prob.sick), as.vector(preds[[i]]$data$truth))
+  perf_rocr[i] <- ROCR::performance(pred2,"tpr","fpr")
+}
+
+kable(data.frame(model=mods,'auc 5-crossvalidation'=c(cv_logreg$aggr,cv_rpart$aggr, cv_nb$aggr, cv_rpart_mis$aggr, cv_nb_mis$aggr),auc=unlist(perf_auc),auprc=unlist(perf_auprc)), caption="Measures of goodness of prediction for each model")%>%
+  kable_styling(latex_options = "hold_position")
+
+```
+
+```{r measures plot, echo=FALSE, fig.height=4, fig.align='left'}
+# plot auc
+
+ROCR::plot(perf_rocr[[1]], main = "ROC curve", col=1, lwd=3)
+for(i in 2:n_mods){
+  ROCR::plot(perf_rocr[[i]], main = "ROC curve", col=i, add=TRUE, lwd=3)
+}
+legend(x=0.2,y=0.6, mods, fill=1:n_mods)
+
+
+calculate_measures_by_threshold <- function(prob, y_truth, positive_value) {
+  real_positives <- sum(y_truth == positive_value)
+
+  as.data.frame(t(sapply(seq(0, 1, length.out = 10000), function(thresh) {
+    true_positives <- sum((prob >= thresh) & (y_truth == positive_value))
+    det_positives <- sum(prob >= thresh)
+    c(thresh = thresh,
+      prec = true_positives / det_positives,
+      rec = true_positives / real_positives)
+  }))) %>%
+    mutate(prec = ifelse(is.nan(prec), 1, prec))
+}
+
+# plot auprc
+m <- data.frame()
+for(i in 1:n_mods){
+ m <- rbind(m, cbind(calculate_measures_by_threshold(preds[[i]]$data$prob.sick, sick_test$Class, "sick"),model=mods[i]))
+}
+g <-  ggplot(aes(x = rec, y = prec, group = model, colour=model), data=m)+ geom_line()+
+  xlim(c(0, 1)) + ylim(c(0, 1)) +
+  ggtitle('Precision-recall plot') + xlab('recall') + ylab('precision')
+
+g
+```
+
+# Conclusion
+Decision tree with and without missing data has better aggregated AUC from 5-fold crossvalidation on training data than other models. Surprisingly they have the worst AUC on test data, but also best AUPRC on test data and this measure is more important due to imbalanced target class. Also in this case it is better to leave missing values for model to handle than doing imputation.
+Decion tree from package `rpart` is an example of an interpretable model. We can see the decision tree.
+```{r, fig.align='left', echo=FALSE}
+rpart.plot::rpart.plot(getLearnerModel(model_rpart_mis, more.unwrap = TRUE),roundint=FALSE)
+```
+

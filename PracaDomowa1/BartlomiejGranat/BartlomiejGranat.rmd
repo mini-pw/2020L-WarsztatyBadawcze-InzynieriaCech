@@ -1,0 +1,223 @@
+---
+title: "Sick dataset analysis"
+author: "Imię i nazwisko"
+date: "25 03 2020"
+output: pdf_document
+---
+  
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(Hmisc)
+library(mlr3)
+library(mlr3tuning)
+library(auprc)
+library(paradox)
+```
+
+# Intro
+
+In this report I tried to keep everything simple. My data cleaning strategy was to delete all of the observations that might be problematic for my model as long as I am not deleting too many records of sick people. We are dealing with very unbalanced data and we can't afford to lose positive cases.
+
+
+```{r data, include = FALSE}
+set.seed(10)
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+```
+
+```{r plot, warning=F}
+DataExplorer::plot_histogram(dataset_raw)
+DataExplorer::plot_bar(dataset_raw)
+DataExplorer::introduce(dataset_raw)
+DataExplorer::plot_intro(dataset_raw)
+```
+
+# Preprocessing
+
+```{r preprocessing, include = FALSE}
+dataset <- dataset_raw %>% 
+  # drop 'TBG' - it is an empty column:
+  select(-TBG)
+```
+
+```{r missings, echo = FALSE}
+gg_miss_var(dataset, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+
+```
+
+I want to delete all rows with missing data but also to control the number of positive cases in my data.
+
+I also want to delete rows with some unrealistic values like 'age' above 400
+
+```{r}
+dataset <- dataset %>% mutate(age=replace(age, age>110 | age<0, NA))
+```
+
+In the future I am dropping all of the rows with NA so they won't be included in our model.
+
+Next I want to see if there are any variables highly correlated that would cause our model to overfit.
+
+```{r fig.height=20, fig.width=20}
+DataExplorer::plot_correlation(dataset)
+```
+
+```{r}
+DataExplorer::introduce(dataset)
+DataExplorer::plot_intro(dataset)
+# keeping track of positive cases before deleting rows
+table(dataset$Class)
+```
+
+What I find out that there for sure are some columns with 0 variance. I also want to delete them. Other variables seem to be good.
+
+First I will drop all the rows that currently have some missing values and see if we lost a lot of positive cases.
+
+```{r}
+dataset <- dataset %>% drop_na()
+
+DataExplorer::introduce(dataset)
+DataExplorer::plot_intro(dataset)
+table(dataset$Class)
+```
+
+We didn't lose a lot of positive cases yet a lot of negatives ones which is good in case of inbalanced data.
+
+Next I will delete all the columns with 0 variance. I will recognize them thanks to function `describe`.
+
+```{r}
+#describe(dataset)
+
+dataset <- dataset %>% 
+  select(-c("TBG_measured", "FTI_measured", "T4U_measured", "TT4_measured", "T3_measured", "TSH_measured" ))
+```
+
+
+# Modelling
+
+First let's split data into train and test based on the file we got.
+
+```{r}
+train_idx <- read.table("indeksy_treningowe.txt", sep=" ", header = TRUE)$x
+test_idx <- setdiff(1:3772, train_idx)
+train <- dataset[train_idx,] %>% drop_na()
+test <- dataset[test_idx,] %>% drop_na()
+
+table(train$Class)
+table(test$Class)
+```
+
+Classes ratios seem to be pretty similiar in both train and test set.
+
+I want to use mlr3 for modelling and a simple decision tree that is easy to explain. I also used Dominik Rafacz's great package auprc that allows us to use this measure inside of mlr3. 
+
+To use mlr3 I had to make sure it is using stratification when resampling our training set.
+
+```{r}
+measure_auc = msr('classif.auc')
+measure = msr("classif.auprc")
+
+
+task2 = TaskClassif$new(id = "classif_task",
+                       backend = train,
+                       target = "Class",
+                       positive = 'sick')
+
+resampling = rsmp("cv", folds = 5)
+
+r= resampling$instantiate(task2)
+
+prop.table(table(task2$truth()))
+
+prop.table(table(task2$truth(r$train_set(1))))
+prop.table(table(task2$truth(r$train_set(2))))
+prop.table(table(task2$truth(r$train_set(3))))
+prop.table(table(task2$truth(r$train_set(4))))
+prop.table(table(task2$truth(r$train_set(5))))
+```
+
+We can see that each of the splits has similiar Class' ratios as the original train set. It means I can do the tuning using this resampling.
+
+
+```{r message=FALSE, warning = FALSE, results = FALSE, cache = FALSE}
+learner_rpart2 = lrn('classif.rpart', predict_sets = c("train", "test"), predict_type = 'prob')
+
+
+tune_ps2 = ParamSet$new(list(
+  ParamDbl$new("cp", lower = 0.001, upper = 0.1),
+  ParamInt$new("minsplit", lower = 16, upper = 64),
+  ParamInt$new("maxdepth", lower = 7, upper = 30)
+))
+
+evals20 = term("evals", n_evals = 50)
+
+instance2 = TuningInstance$new(
+  task = task2,
+  learner = learner_rpart2,
+  resampling = resampling,
+  measures = measure,
+  param_set = tune_ps2,
+  terminator = evals20
+)
+
+tuner2 = tnr('random_search')
+tuner2$tune(instance2)
+
+learner_rpart2$param_set$values <- instance2$result$params
+learner_rpart2$train(task2)
+
+pred_train <- learner_rpart2$predict(task2)
+pred_test <- learner_rpart2$predict_newdata(task2, newdata = test)
+
+score_train <- pred_train$score(measure)
+score_test <- pred_test$score(measure)
+
+auc_train <- pred_train$score(measure_auc)
+auc_test <- pred_test$score(measure_auc)
+```
+
+
+# Final results
+
+```{r}
+results <- data.frame(
+  'auc train' = auc_train,
+  'auc_test' = auc_test,
+  'auprc_train' = score_train,
+  'auprc_test'= score_test
+)
+
+kable(results)
+```
+
+As we deal with unbalanced data `auprc` is much better measure to look at and it seems to be really good with our very simple approach.
+
+We can also look at how easy to interpret this model is by looking at the tree visualization and variables' importances.
+
+What I have proven is that cleaning data without losing positive cases is the way to deal with unbalanced data.
+
+```{r cache = FALSE}
+rpart.plot::rpart.plot(learner_rpart2$model,roundint=FALSE)
+
+kable(learner_rpart2$importance())
+```
+
+
+
