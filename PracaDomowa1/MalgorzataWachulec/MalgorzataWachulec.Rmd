@@ -1,0 +1,330 @@
+---
+title: "Sick dataset analysis"
+author: "Malgorzata Wachulec"
+date: "17 04 2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(imbalance)
+library(mice)
+library(mlr3)
+library(auprc)
+library(mlr3learners)
+library(ROSE)
+library(caret)
+
+```
+
+
+```{r data, include = FALSE}
+
+set.seed(10)
+
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+```
+
+```{r plot, warning=F, include=FALSE}
+
+DataExplorer::plot_histogram(dataset_raw)
+
+DataExplorer::plot_bar(dataset_raw)
+
+```
+
+# Preprocessing
+
+Some factor columns do not have sufficient number of observations in each of the levels. That means some sets will have observations with only one feature value. These variables will not be useful when training the model and might cause errors. For this reason I am deleting columns 'TBG', 'hypopituitary' and 'TBG_measured'.
+
+```{r preprocessing, include = FALSE}
+
+dataset <- dataset_raw %>% 
+  # drop 'TBG' - it is an empty column:
+  select(-TBG) %>%
+  # drop 'hypopituitary' - only one observiation has an answer true to that
+  select(-hypopituitary) %>%
+  # drop 'TBG_measured' - all values have level false
+  select(-TBG_measured) %>%
+  select(-TSH_measured) %>%
+  select(-T3_measured) %>%
+  select(-TT4_measured) %>%
+  select(-FTI_measured) %>%
+  select(-T4U_measured) 
+
+# Exchanging age from 455 to 45 for one observation
+dataset[which(dataset$age==455),1] = 45
+```
+
+After these columns are deleted, we can now look at the missing values. All the variables that end with '_measured' are flags indicating wheter a certain characteristic is missing or not. Since in every column there is less than 25% of missing data, I will imput it as opposed to deleting the entire column or observation for which the column is empty. This means I will no longer need these flags and I will delete them.
+
+```{r missings, echo=FALSE}
+
+gg_miss_var(dataset, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+
+```
+
+As I am planning use the mice package to imput missing data, which is predicting the missing values through model built on other observations, I will first divide data into training, validation and test sets. This will prevent for training set to have values inputed based on observations from test set and vice versa.
+
+I have decided to use validation set as opposed to cross-validation, that was advised, because I am planning to use under- and oversampling, which does not work great with cross-validation. The results obtained in such manner would not reflect the measure levels expected on the test set.
+
+```{r train_test}
+# dividing data into train and test
+training_indicies <- read.table("indeksy_treningowe.txt")
+training_indicies <- training_indicies$x
+trainset_to_be_divided <- dataset[ training_indicies,]
+testset <-  dataset[-training_indicies,]
+
+# dividing training set into 75% training set and 25% valdation set
+# each set has the same distribution of the target class
+set.seed(3456)
+trainIndex <- createDataPartition(trainset_to_be_divided$Class, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+trainset <- trainset_to_be_divided[ trainIndex,]
+validset <- trainset_to_be_divided[-trainIndex,]
+```
+
+Imputation of missing values using mice() function from mice package. As to make sure, that the model for imputing missing values will not use target variable, it is taken away before imputing and added again to the training, validation and test set after the imputing process.
+
+```{r imput_missing, include=FALSE}
+# Imputing data separately on all of the set
+imputed_data_train <- mice(trainset[,-22],m=1,maxit = 50, seed=123)
+complete_trainset <- cbind(complete(imputed_data_train),trainset[,22])
+
+imputed_data_valid <- mice(validset[,-22],m=1,maxit = 50, seed=123)
+complete_validset <- cbind(complete(imputed_data_valid),validset[,22])
+
+imputed_data_test <- mice(testset[,-22],m=1,maxit = 50, seed=123)
+complete_testset <- cbind(complete(imputed_data_test),testset[,22])
+
+# Changing target variable name back to "Class"
+colnames(complete_trainset)[22] <- "Class"
+colnames(complete_validset)[22] <- "Class"
+colnames(complete_testset)[22] <- "Class"
+```
+
+# Building basic logistic regression
+
+Here I am defining training, validation and test tasks, as well as the learner - logistic regression. Then I am checking it's performance on the validation set.
+```{r model, warning=FALSE}
+# task and learner definition
+trainTask <- TaskClassif$new(id = "train sick", backend = complete_trainset, 
+                             target = "Class", positive = "sick")
+validTask <- TaskClassif$new(id = "valid sick", backend = complete_validset, 
+                             target = "Class", positive = "sick")
+testTask <- TaskClassif$new(id = "test sick", backend = complete_testset, 
+                            target = "Class",positive = "sick")
+
+learner <- lrn("classif.log_reg")
+learner$predict_type <- "prob"
+
+# model and prediction
+learner$train(trainTask)
+result <- learner$predict(validTask)
+cat("Contigency table: \n")
+result$confusion
+```
+
+27 cases from the validation set were classified incorrectly, but only 28 out of 56 sick patients were classified as such. Let's check recall and other measures of this prediction.
+
+```{r measures_1, echo=FALSE}
+auc = msr("classif.auc")
+auprc = msr("classif.auprc")
+recall = msr("classif.recall")
+specificity = msr("classif.specificity")
+
+# measures on validation set
+cat("Auc on validation set: ",result$score(auc),"\n") 
+cat("Auprc on validation set: ",result$score(auprc),"\n")
+cat("Recall on validation set: ",result$score(recall),"\n") 
+cat("Specificity on validation set: ",result$score(specificity),"\n") 
+```
+Recall is low, as expected, whereas specificity is high, also as expected.
+
+# Improving the model
+
+## Oversampling
+Generating more observations with the the minorty target class using random over-sampling technique from ROSE package.
+
+```{r oversampling, echo=FALSE}
+print("Target variable class proportion")
+table(complete_trainset$Class) # great imbalance in target class
+cat("\n")
+print("Target variable class proportion after oversampling")
+trainset.rose <- ROSE(Class ~ ., data=complete_trainset, seed=123)$data
+table(trainset.rose$Class)
+```
+
+Defining new training task, including the new observations:
+```{r model_improvement, warning=FALSE}
+# new training task definition
+trainTask <- TaskClassif$new(id = "train sick", backend = trainset.rose, 
+                             target = "Class", positive = "sick")
+
+# model and prediction
+learner$train(trainTask)
+result <- learner$predict(validTask)
+cat("Contigency table: \n")
+result$confusion
+```
+
+This time 91 cases were misclassified, but there were only 8 false negatives. Let's check the measures of the result.
+
+```{r measures_2, echo=FALSE}
+cat("Auc on validation set: ",result$score(auc),"\n") 
+cat("Auprc on validation set: ",result$score(auprc),"\n")
+cat("Recall on validation set: ",result$score(recall),"\n") 
+cat("Specificity on validation set: ",result$score(specificity),"\n") 
+```
+
+Auprc has dropped, same as specificity, and recall has risen as expected. Seems there has been too much oversampling. 
+
+## Under- and oversampling
+
+This trial combines oversampling with undersampling. Below we can see the contigency table of the result and measures of the prediction.
+
+```{r model_improvement_2, warning=FALSE,echo=FALSE}
+trainset.ovun <- ovun.sample(Class ~ ., data=complete_trainset, p=0.07, seed=123)$data
+print("Target variable class proportion after under- and oversampling:")
+table(trainset.ovun$Class)
+
+# new training task definition
+trainTask <- TaskClassif$new(id = "train sick", backend = trainset.ovun, 
+                             target = "Class", positive = "sick")
+
+# model and prediction
+learner$train(trainTask)
+result <- learner$predict(validTask)
+cat("\n\nContigency table: \n")
+result$confusion
+
+# measures
+cat("\n\nAuc on validation set: ",result$score(auc),"\n") 
+cat("Auprc on validation set: ",result$score(auprc),"\n")
+cat("Recall on validation set: ",result$score(recall),"\n") 
+cat("Specificity on validation set: ",result$score(specificity),"\n") 
+```
+
+Now the auprc measure grew higher, same as auc and recall.
+
+```{r final, warning=FALSE, include=FALSE}
+final_result <- learner$predict(testTask)
+```
+
+## Improving preprocessing
+
+Here I go back to preprocessing and see whether I can improve the model this way. Let's apply logarithmic function to variables 'T4U' and 'TSH' and scale all of the numerical variables.
+
+```{r preprocessing_2, warning=FALSE, include=FALSE}
+hist(dataset$TSH)
+hist(log(dataset$TSH)) 
+hist(dataset$T4U)
+hist(log(dataset$T4U)) 
+```
+
+```{r preprocessing_3, warning=FALSE, include=FALSE}
+colnames(dataset)
+numeric_cols <- c(1,16,17,18,19,20)
+dataset$T4U <- log(dataset$T4U)
+dataset$TSH <- log(dataset$TSH) 
+dataset[,numeric_cols] <- scale(dataset[,numeric_cols])
+
+# dividing data into train and test
+training_indicies <- read.table("indeksy_treningowe.txt")
+training_indicies <- training_indicies$x
+trainset_to_be_divided <- dataset[ training_indicies,]
+testset <-  dataset[-training_indicies,]
+
+# dividing training set into 75% training set and 25% valdation set
+# each set has the same distribution of the target class
+set.seed(3456)
+trainIndex <- createDataPartition(trainset_to_be_divided$Class, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+trainset <- trainset_to_be_divided[ trainIndex,]
+validset <- trainset_to_be_divided[-trainIndex,]
+
+# Imputing data separately on all of the set
+imputed_data_train <- mice(trainset[,-22],m=1,maxit = 50, seed=123)
+complete_trainset <- cbind(complete(imputed_data_train),trainset[,22])
+
+imputed_data_valid <- mice(validset[,-22],m=1,maxit = 50, seed=123)
+complete_validset <- cbind(complete(imputed_data_valid),validset[,22])
+
+imputed_data_test <- mice(testset[,-22],m=1,maxit = 50, seed=123)
+complete_testset <- cbind(complete(imputed_data_test),testset[,22])
+
+# Changing target variable name back to "Class"
+colnames(complete_trainset)[22] <- "Class"
+colnames(complete_validset)[22] <- "Class"
+colnames(complete_testset)[22] <- "Class"
+
+# task and learner definition
+trainset.ovun <- ovun.sample(Class ~ ., data=complete_trainset, p=0.07, seed=123)$data
+
+trainTask <- TaskClassif$new(id = "train sick", backend = trainset.ovun, 
+          target = "Class", positive = "sick")
+validTask <- TaskClassif$new(id = "valid sick", backend = complete_validset, 
+                             target = "Class", positive = "sick")
+testTask <- TaskClassif$new(id = "test sick", backend = complete_testset, 
+                            target = "Class",positive = "sick")
+
+learner <- lrn("classif.log_reg")
+learner$predict_type <- "prob"
+
+```
+
+```{r model_after_preprocessing, echo=FALSE}
+# model and prediction
+learner$train(trainTask)
+result <- learner$predict(validTask)
+cat("\n\nContigency table: \n")
+result$confusion
+
+# measures
+cat("\n\nAuc on validation set: ",result$score(auc),"\n") 
+cat("Auprc on validation set: ",result$score(auprc),"\n")
+cat("Recall on validation set: ",result$score(recall),"\n") 
+cat("Specificity on validation set: ",result$score(specificity),"\n") 
+```
+
+After additional preprocessing, the model performed worse on the validation set based on auprc. For this reason the final version is the one before based on the under- and oversampling method.
+
+# Final score on testset
+
+These are the results obtained on the test set using the final version of the model.
+
+```{r model_improvement_3, warning=FALSE, echo=FALSE}
+cat("Contigency table: \n")
+print(final_result$confusion)
+
+# measures
+cat("\n\nAuc on test set: ",final_result$score(auc),"\n") 
+cat("Auprc on test set: ",final_result$score(auprc),"\n")
+cat("Recall on test set: ",final_result$score(recall),"\n") 
+cat("Specificity on test set: ",final_result$score(specificity),"\n") 
+```
+
