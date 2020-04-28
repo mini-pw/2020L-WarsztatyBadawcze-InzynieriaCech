@@ -1,0 +1,447 @@
+---
+title: "Sick dataset analysis"
+author: "Bogdan Jastrzębski"
+date: "5 kwietnia 2020 r."
+output:
+  bookdown::pdf_book:
+    number_sections: TRUE
+    toc: true
+    fig_caption: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(DALEX)
+library(GGally)
+library(gridExtra)
+library(auprc)
+library(e1071)
+library(rpart.plot)
+library(imputeTS)
+```
+
+
+```{r data, echo = FALSE, message=FALSE, warning = FALSE}
+set.seed(10)
+sick <- getOMLDataSet(data.name = "sick")$data
+
+```
+
+\newpage
+
+# Introduction 
+
+In the following paper, I present an analysis of the "Sick" dataset, along with the strategy for predicting "Class" in an interpretable manner and it's results.
+
+```{r preprocessing, echo = FALSE, message=FALSE, warning = FALSE}
+
+# dataset <- dataset_raw %>% 
+#   # drop 'TBG' - it is an empty column:
+#   select(-TBG)
+  
+sick_tidy <- sick %>%
+  dplyr::select(-TBG,
+         -TBG_measured,
+         -FTI_measured,
+         -T4U_measured,
+         -TT4_measured,
+         -T3_measured,
+         -TSH_measured)
+
+```
+
+# Initial Data Mining
+
+In this section I will address all the major issues with the dataset and describe the way to face them.
+
+## Balance of the "Class" Variable
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+ggplot(sick_tidy, aes(x=1, fill=(sick_tidy$Class == 'sick'))) + geom_bar(position="fill") +
+  scale_fill_discrete(name="Is sick") + 
+    coord_flip() +
+  theme_minimal() +
+  theme(aspect.ratio = 0.2,
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ylab("Ratio")
+```
+
+The "Class" variable is not balanced, which indicates, that we need to measure model performance in more sophisticated way than calculating accuracy of a given model. I will use the following two measures:
+
+- auc
+
+- auprc
+
+\newpage
+
+## Distributions of Categorical Variables
+
+In this section, I will deliberate on some of the variables in our dataset.
+
+### Exploration
+
+Distributions of random variables are as follow:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+plot_bar(sick_tidy)
+```
+
+There is a number of variables, that are nearly constant, namely:
+
+- query_on_thyroxine
+
+- on_antithyroid_medication
+
+- pregnant
+
+- thyroid_surgery
+
+- I131_treatment
+
+- lithium
+
+- goitre
+
+- hypopituitary
+
+Do these variables have an impact on "Class"?
+
+$\chi^2$ test results:
+
+```{r, echo=FALSE}
+chi <- lapply(list(sick_tidy$query_on_thyroxine,
+sick_tidy$on_antithyroid_medication,
+sick_tidy$pregnant,
+sick_tidy$thyroid_surgery,
+sick_tidy$I131_treatment,
+sick_tidy$lithium,
+sick_tidy$goitre,
+sick_tidy$hypopituitary), function(v) {
+  chisq.test(v, sick_tidy$Class, simulate.p.value = TRUE)
+})
+
+n <- c("query_on_thyroxine",
+ "on_antithyroid_medication",
+ "pregnant",
+ "thyroid_surgery",
+ "I131_treatment",
+ "lithium",
+ "goitre",
+ "hypopituitary")
+
+
+kable(data.frame(Names = n, p.values=sapply(chi, function(x)  x$p.value))) # Unfortunate
+
+```
+
+As we can see, some of those variables may in fact be connected with "Class".
+I will exclude the "hypopituitary" variable due to a very little information it provides (distribution of "hypopituitary" is 1:3771). Even if this variable is important, we have no statistical certainty to say so, given that only one observation is positive.
+
+### Solution
+
+```{r, message=FALSE, warning = FALSE}
+
+sick_tidy <- sick_tidy %>% 
+  dplyr::select(-hypopituitary)
+
+```
+
+
+## Missing values reduction
+
+In this section, I will discuss the missing values in the dataset.
+
+### Exploration
+
+There are a lot of missing values in the dataset.
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+DataExplorer::plot_missing(sick_tidy)
+```
+
+However, there is no problem with removing observations with missing values, for the dataset size is very large. Given that we focus on interpretable models, which are generally not complex, there's no need to impute missing values. Such techniques may cause bias in parameter estimation, i.e. lead to the assignment of an inaccurate level of importance to some features.
+
+## Solution
+
+```{r, message=FALSE, warning = FALSE}
+sick_tidy <- sick_tidy %>% na.exclude()
+
+```
+
+## Skewness reduction
+
+Some of the numeric variables are skewed. I will try to fix that transforming those variables.
+
+### Exploration
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+
+skewness <- sapply(16:20, function(i) {
+  c(column = i,
+    skewness = skewness(sick_tidy[,i]),
+    skewness_log = skewness(log(sick_tidy[,i])),
+    skewness_sqrt = skewness(sqrt(sick_tidy[,i])))
+})
+s <- as.data.frame(t(skewness))
+s$column <- names(sick_tidy)[s$column ]
+before <- ggpairs(sick_tidy[, 16:20], aes(colour=sick_tidy$Class))
+before
+```
+
+Skewness of these variables:
+
+```{r, echo=FALSE,  message=FALSE, warning=FALSE}
+kable(s)
+```
+
+As we can see, we can fix the skewness pretty easily, by taking logarithm or square root of these variables.
+
+### Solution
+
+```{r}
+sick_t <- sick_tidy %>%
+  mutate(log_TSH = log(TSH),
+         sqrt_T3 = sqrt(T3),
+         sqrt_TT4 = sqrt(TT4),
+         log_T4U = log(T4U),
+         sqrt_FTI = sqrt(FTI)) %>% 
+  dplyr::select(-TSH, -T3, -TT4, -T4U, -FTI)
+after <- ggpairs(sick_t[, 18:22], aes(colour=sick_t$Class))
+```
+
+After the transformation:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+after
+```
+
+# Prediction models
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+i <- sample(1:2643, 2643/5, replace=FALSE)
+sick_test <- sick_t[i, ]
+sick_t <- sick_t[-i, ]
+
+```
+
+
+
+In this section I will compare five different interpretable models:
+
+- naive biases
+
+- logistic regression
+
+- basic tree
+
+- knn
+
+and the winning model.
+
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+task <- makeClassifTask(data = sick_t, target = "Class")
+rdesc <- makeResampleDesc("CV", iters=5)
+auprc.measure <- makeMeasure(id = "auprc",
+            name = "AUPRC",
+            properties = c('classif'),
+            minimize = FALSE,
+            best = 1,
+            worst = 0,
+            fun = function(task, model, pred, feats, extra.args) {
+              #p <- predict(model, task)$data
+              #auprc(p[,4], p$truth, 'sick')
+              auprc(pred$data$prob.sick, pred$data$truth, "sick")
+            })
+```
+
+## Naive Bayes
+
+Let's perform CV resample with naive Bayes.
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+nb <- makeLearner("classif.naiveBayes", predict.type = 'prob')
+r <- resample(nb, task, rdesc, measures = list(auc, auprc.measure))
+
+kable(r$measures.test)
+```
+
+As we can see, naive bayes model performs quite well on auc, but auprc shows a room for improvement.
+
+## Logistic Regression
+
+Results of logistic regression:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+lr <- makeLearner("classif.binomial", predict.type = 'prob')
+
+r <- resample(lr, task, rdesc, measures = list(auc, auprc.measure))
+
+kable(r$measures.test)
+
+lrm <- train(lr, task)
+s<-summary(lrm$learner.model)
+kable(s$coefficients)
+```
+
+Logistic regression is already much better in both measures. What if this problem is nonlinear?
+
+\newpage
+
+## Tree
+
+The most basic nonlinear model is regression tree.
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+library(rpart.plot)
+tree <- makeLearner("classif.rpart", predict.type = 'prob')
+r <- resample(tree, task, rdesc, measures = list(auc, auprc.measure))
+rpart.plot(train(tree, task)$learner.model)
+```
+
+Tree results:
+
+```{r, echo=FALSE}
+kable(r$measures.test)
+```
+
+This basic tree achives astonishing 20% improvement over naive bayes classifier in auprc.
+
+\newpage
+
+## The KNN
+
+K-nearest neighbors is one of the oldest classifiers. Providing enough data, might make it very robust. Just like other "shallow", nonlinear models, like svm with gaussian kernel for instance, it has a scalibility problem. However, unlike SVM, it's highly interpretable, despite that it doesn't generalise knowledge.
+
+KNN Performance:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+knn <- makeLearner("classif.kknn", predict.type = 'prob')
+r <- resample(knn, task, rdesc, measures = list(auc, auprc.measure))
+kable(r$measures.test)
+```
+
+Performance is good. What if knn was trained only on variables significant in logistic regression and numeric data?
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+task_knn <- makeClassifTask(id="task_knn",data=sick_t %>% dplyr::select(log_TSH,
+                                                   sqrt_T3,
+                                                   sqrt_TT4,
+                                                   #log_T4U,
+                                                   sqrt_FTI,
+                                                   Class,
+                                                   query_hypothyroid), target="Class")
+r <- suppressMessages(resample(knn, task_knn, rdesc, measures = list(auc, auprc.measure)))
+
+kable(r$measures.test)
+```
+
+Results are a bit better. The KNN model achives about 84% in auprc benchmark, beating all other models. Note that dataset size is large enough, for it work good - there are about 2600 observations.
+
+Can this result be improved? KNN relies on data, and we deleted about a third of the dataset. Let's interpolate missing values and check, if it improves performance. It's worth noticing, that test set should only include observations without missing values, since they are more trustworthy.
+
+KNN Performance after imputation:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+sick_last <- sick %>% dplyr::select(-TBG,
+         -TBG_measured,
+         -FTI_measured,
+         -T4U_measured,
+         -TT4_measured,
+         -T3_measured,
+         -TSH_measured)
+
+
+sick_last <- sick_last[!is.na(sick_last$sex), ]
+indices <- which(!apply(is.na(sick_last),1,any))
+
+sick_sick <- na.interpolation(sick_last)
+
+task_new <- makeClassifTask(data = sick_sick, target = "Class")
+
+perm <- sample(indices, length(indices), replace = FALSE)
+
+b <- t(sapply(1:5, function(i) {
+  t <- subsetTask(task_new, subset=perm[1:length(perm) %% 5 != i-1])
+  ttest <- subsetTask(task_new, subset=perm[1:length(perm) %% 5 == i-1])
+  model <- train(knn, t)
+  p <- predict(model, ttest)
+  auc <- performance(p, measures = list(auc))
+  auprc <- auprc(p$data[,4], p$data$truth, 'sick')
+  c(iter=i, auc=auc, auprc=auprc)
+}))
+
+
+kable(b)
+
+```
+
+As we can see, results are worst. The idea of interpolating data turned out to be not effective.
+
+## C-Tree
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE, fig.width=15, fig.height=15}
+ctree <- makeLearner("classif.ctree", predict.type = 'prob')
+r <- resample(ctree, task, rdesc, measures = list(auc, auprc.measure))
+plot(train(ctree, task)$learner.model)
+```
+
+C-Tree results:
+
+```{r, echo=FALSE}
+kable(r$measures.test)
+```
+
+Results are a lot better.The tree is not overly complicated. It mostly uses the T3 variable and TSH.
+
+# Conclusions and the last benchmark
+
+The C-tree model turned out to be the best.
+Perhaps the KNN could be improved by learning metric, but this goes beyond the scope of this paper.
+
+Here's comparison of different models on a test dataset:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+b <- sapply(list(nb,
+            lr,
+            tree,
+            knn,
+            ctree), function(l) {
+              m <- train(l, task)
+              p <- predict(m, newdata=sick_test)
+              c(l$id, auprc(p$data[,3], p$data$truth, 'sick'))
+            })
+
+m <- train(knn, task_knn)
+p <- predict(m, newdata=sick_test %>% dplyr::select(log_TSH,
+                                                   sqrt_T3,
+                                                   sqrt_TT4,
+                                                   #log_T4U,
+                                                   sqrt_FTI,
+                                                   Class,
+                                                   query_hypothyroid))
+
+b <- cbind(b, c("classif.kknn subset", auprc(p$data[,3], p$data$truth, 'sick')))
+kable(t(b))
+```
+
+
+
+
+
+
+
+
