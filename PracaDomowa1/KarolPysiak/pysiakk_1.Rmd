@@ -1,0 +1,187 @@
+---
+title: "An EDA and a white box classification of an OpenML sick dataset"
+author: "Karol Pysiak"
+date: "17.04.2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE)
+library(glmnet)
+library(corrplot)
+library(readr)
+library(ggplot2)
+library(DataExplorer)
+library(mlr)
+library(rpart)
+library(auprc)
+library(pROC)
+library(kknn)
+
+dane <- read_csv("dataset_38_sick.csv")
+ind <- read.table("indeksy_treningowe.txt")
+```
+
+# Introduction
+
+In this exercise we will be working on a "sick" dataset from the OpenML database. What will be presented there is an Exploratory Data Analaysis and an attempt to predict some classes on a test data with an explainable model, which will be introduced later.
+
+
+# Exploratory Data Analysis
+
+## Insight into structure of data
+
+Firstly, we want to check how the dataset is built. We will show if there are missing values, what types are the variables of and how variables are distributed.
+
+```{r fig.align='center', fig.height=3}
+plot_intro(dane)
+
+```
+
+The one thing that can bother us when looking on this graph is that we have some fraction of variables completely missing. The percentage of missing values in total is not that bad. Let's check how this missing values look grouping by variables.
+
+```{r}
+plot_missing(dane)
+
+```
+
+As we have seen above there is one variable completely missing and it is the `TBG`. We will delete it from dataset, because it is totally insignificant in this situation. The rest of variables have a quite small fraction of missing values, so for the sake of simplicity we will delete rows that contain missing values.
+
+One more thing that can very much affect our classification is that the `hypopituitary` variable, which is a logical variable, has close to 0 occurances of a `TRUE` value, so it will bring no benefit to the model. 
+
+```{r fig.height=3, fig.width=3, fig.align='center'}
+plot_bar(dane[c("hypopituitary")])
+```
+
+Some of variables are just flags if the other variable contains an `NA` value in that observation. This can give us very little information so we will omit these variables either.
+
+So after all these observations we have a dataset that look like this.
+
+```{r}
+dane_clr <- dane[,-c(28, 27, 25, 23, 21, 19, 17, 15)]
+dane_omt <- dane_clr[which(rowSums(is.na(dane_clr)) == 0),]
+print(dane_omt)
+```
+
+While processing the data it turned out that one of observations has invalid `age` of $455$. It was $45$ or $55$ probably, but there is no need to choose it at random, because it is just a one observation, so we will just remove it from our dataset. Below we can see a part of the table of frequencies of ceratain ages of observations.
+
+```{r}
+library(knitr)
+t <- as.data.frame(table(dane_omt$age)[82:92])
+colnames(t) <- c("age", "Freq")
+kable(x = t)
+```
+
+```{r}
+dane_omt2 <- dane_omt[-which(dane_omt$age == 455),]
+```
+
+
+Now we will check the dependencies between variables.
+
+```{r fig.height=8}
+plot_correlation(dane_omt2)
+```
+
+```{r fig.width=10, fig.height=10}
+pairs(dane_omt2[c("age", "TSH", "T3", "TT4", "T4U", "FTI")])
+```
+
+Variables `T3`, `TT4`, `T4U`, `FTI` looks somehow correlated, especially `TT4` and `FTI`, but not in a way that we should worry about.
+
+# White box models testing
+
+Firstly we just standarize our data and split it into the training and testing data. In the training data, as it was mentioned before, we just remove rows that contain missing data. With the testing data we cannot do that because it could affect our end score, which we want to be as close to the reality as possible. We will replace the missing values in the testing data with a mean for numerical variables and a mode for categorical variables.
+
+```{r}
+dane_std <- dane_clr
+dane_std$age <- (dane_std$age - mean(dane_omt$age)) / sd(dane_omt$age)
+dane_std$TSH <- (dane_std$TSH - mean(dane_omt$TSH)) / sd(dane_omt$TSH)
+dane_std$T3 <- (dane_std$T3 - mean(dane_omt$T3)) / sd(dane_omt$T3)
+dane_std$TT4 <- (dane_std$TT4 - mean(dane_omt$TT4)) / sd(dane_omt$TT4)
+dane_std$T4U <- (dane_std$T4U - mean(dane_omt$T4U)) / sd(dane_omt$T4U)
+dane_std$FTI <- (dane_std$FTI - mean(dane_omt$FTI)) / sd(dane_omt$FTI)
+cat <- !sapply(dane_std, is.numeric)
+dane_std[,cat] <- lapply(dane_std[,cat], as.factor)
+test <- dane_std[-unlist(ind),]
+train <- dane_std[unlist(ind),]
+train <- as.data.frame(train[which(rowSums(is.na(train))==0),])
+colna <- which(colSums(is.na(test)) > 0)
+for(i in colna){
+  if(i %in% which(cat)) test[is.na(test[[i]]), i] <- names(sort(table(train[,i]), decreasing = TRUE)[1])
+  if(i %in% which(!cat)) test[is.na(test[[i]]), i] <- mean(train[,i])
+}
+test <- as.data.frame(test)
+```
+
+
+## Decision Tree
+
+The first interpretable model that we will test here is Decision Tree. It is probably one of the easiest to describe and draw model. There we will use the `rpart` algorithm from the `mlr` package. After training it on out training data we have a tree that looks like this.
+
+```{r}
+dt_task <- makeClassifTask(data=train, target="Class")
+dt_prob <- makeLearner('classif.rpart', predict.type="prob")
+dt <- train(dt_prob, dt_task)
+rpart.plot::rpart.plot(dt$learner.model, roundint = FALSE)
+```
+
+As we can see, model decides which way to go based on value of certain variables. Thresholds are tuned during the training process.
+
+```{r}
+res <- predict(dt, newdata = test)
+print(paste0("AUPRC: ", auprc(res$data$prob.sick, res$data$truth, "sick")))
+precision_recall_curve(res$data$prob.sick, res$data$truth, "sick")
+r <- roc(test$Class, res$data$prob.sick, plot = TRUE, print.auc = TRUE, quiet = TRUE)
+```
+
+
+## Logistic Regression
+
+Logistic Regression is easy to explain. It is like Linear Regression of classification.
+
+```{r, warning=FALSE}
+lr_prob <- glm(Class~., train, family = 'binomial')
+res <- predict(lr_prob, test, type = "response")
+print(paste0("AUPRC: ", auprc(res, test$Class, "sick")))
+precision_recall_curve(prob = res, y_truth = test$Class, positive_value = 'sick')
+r <- roc(test$Class, res, plot = TRUE, print.auc = TRUE, quiet = TRUE)
+```
+
+## kNN 
+
+`kNN` model is based on how observations are distributed in space. We just look what number of $k$ closest neighbors belong to each class.
+
+### Standard tests
+
+```{r}
+knn_task <- makeClassifTask(data=train, target="Class")
+knn_prob <- makeLearner('classif.kknn', predict.type="prob")
+knn <- train(knn_prob, knn_task)
+```
+
+```{r}
+res <- predict(knn, newdata = as.data.frame(test))
+print(paste0("AUPRC: ", auprc(res$data$prob.sick, res$data$truth, "sick")))
+precision_recall_curve(res$data$prob.sick, res$data$truth, "sick")
+r <- roc(test$Class, res$data$prob.sick, plot = TRUE, print.auc=TRUE, quiet = TRUE)
+```
+
+### Tests with removed rows with missing values
+
+I just was curious how removing rows of testing data, instead of imputing them, will affect our scores.
+
+```{r}
+test_exp <- dane_std[-unlist(ind),]
+test_exp <- as.data.frame(test_exp[which(rowSums(is.na(test_exp))==0),])
+res <- predict(knn, newdata = test_exp)
+print(paste0("AUPRC: ", auprc(res$data$prob.sick, res$data$truth, "sick")))
+precision_recall_curve(res$data$prob.sick, res$data$truth, "sick")
+r <- roc(test_exp$Class, res$data$prob.sick, plot = TRUE, print.auc = TRUE, quiet = TRUE)
+```
+
+Although it was kind of predictable I find this experiment very informative, because sometimes we want to make something quickly and easily, but we end up with messed up scores and results. There we got better scores than we should and in a real life task it could have devastating effects on our project.
+
+# Summary
+
+It is beyond doubt that some problems require really complicated solutions, but in many cases we can use much simpler and much more interpretable models. This case is an example that even with models like logistic regression or decision tree we can get pretty good results. What is more, when we know how exact model works we can tune it ourselves or augment our data a bit to boost the efficiency of model. One last thing is very interesting. When we take a look at `AUC` and `AUPRC` measures of models we can see that `AUC` is almost the same for all of the cases, when `AUPRC` differ significantlly.

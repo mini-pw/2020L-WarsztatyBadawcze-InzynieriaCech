@@ -1,0 +1,266 @@
+---
+title: "PD1"
+author: "Dominik Rafacz"
+date: "16.04.2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = TRUE,
+                      fig.width = 10,
+                      fig.height = 7,
+                      fig.align = "center")
+library(kableExtra)
+
+library(dplyr)
+library(ggplot2)
+library(readr)
+
+library(DataExplorer)
+library(corrplot)
+
+library(mlr3)
+library(mlr3learners)
+library(mlr3pipelines)
+library(mlr3tuning)
+
+library(paradox)
+library(mice)
+library(auprc)
+
+set.seed(1998)
+```
+
+
+```{r data, include = FALSE}
+dat_raw <- read_csv("data/dat_all.csv")
+indices_train <- read_delim("data/trainind.csv", 
+                            col_names = c("new_ind", "orig_ind"), 
+                            delim = " ", skip = 1)$orig_ind
+indices_test <- setdiff(1:nrow(dat_raw), indices_train)
+```
+
+```{r plot, warning=F}
+plot_histogram(dat_raw[indices_train, ])
+plot_bar(dat_raw[indices_train, ])
+plot_missing(dat_raw)
+```
+
+We can see that `TBG` is an empty column, `TBG_measured` has only one value, so does `hypopituitary`.
+
+# Preprocessing
+
+```{r preprocessing, include = FALSE}
+dat <- dat_raw %>% 
+  select(-TBG,              # drop 'TBG' - it is an empty column:
+         -TBG_measured,     # same here
+         -referral_source,  # i don't think doctors should decide 
+                            # if somebody is sick basing on source...
+         -hypopituitary     # empty in training set 
+         ) %>%
+  mutate(sex = ifelse(is.na(sex) & pregnant, "M", sex),          # obvious...
+         is_male = ifelse(is.na(sex) | sex == "M", TRUE, FALSE), # to remove NA
+         is_sex_specified = ifelse(!is.na(sex), TRUE, FALSE),    # to keep track of NA
+         T4U_FTI_measured = FTI_measured,                        # very big correlation
+         sick = as.factor(Class)) %>%                            # for convenience
+  select(-FTI_measured,     # remove unnecessary classes
+         -T4U_measured,
+         -Class,
+         -sex)
+```
+
+```{r corrplot}
+corrplot(cor(dat[indices_train, -25]))
+```
+
+Now, let's prepare very simple rpart model with tuned parameters.
+
+```{r rpart}
+task <- TaskClassif$new("sick", dat[indices_train, ], "sick", "sick")
+learner <- lrn("classif.rpart")
+learner$predict_type = "prob"
+
+set.seed(1998)
+param_set <- ParamSet$new(params = list(
+  ParamDbl$new("cp", lower = 0.001, upper = 0.1),
+  ParamInt$new("minsplit", lower = 5, upper = 30)
+))
+terminator <- term("evals", n_evals = 10)
+tuner <- tnr("random_search")
+resampling_inner <- rsmp("holdout")
+measures <- list(msr("classif.auc"), msr("classif.auprc"))
+
+autotuner <- AutoTuner$new(learner, resampling_inner, measures = measures, 
+                           tune_ps = param_set, terminator = terminator, tuner = tuner)
+
+resampling_outer <- rsmp("cv", folds = 5)
+```
+
+```{r tune_results, eval=FALSE, include=TRUE}
+result <- resample(task = task, learner = autotuner, resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r tune_print}
+knitr::kable(cbind(classif.auc = 0.9540692, classif.auprc = 0.7859588)) %>%
+  kable_styling(position = "center")
+```
+Parameters chosen during tuning:
+
+* cp = 0.005
+* minsplit = 10
+
+# Operating on data
+
+I have decided to combine information if some measurements were made into one column by summing them up.
+
+```{r missings, results = "hide"}
+dat_t <- dat %>%
+  mutate(measurements = T4U_FTI_measured + TT4_measured + T3_measured + TSH_measured) %>%
+  select(-ends_with("measured"))
+
+task <- TaskClassif$new("sick", dat_t[indices_train, ], "sick", "sick")
+
+set.seed(1998)
+learner <- lrn("classif.rpart", cp = 0.005, minsplit = 10)
+learner$predict_type = "prob"
+
+```
+
+```{r missings_results, eval=FALSE, include=TRUE}
+result_t <- resample(task = task, learner = learner, resampling = resampling_outer)
+result_t$aggregate(measures)
+```
+
+
+```{r missings_print}
+knitr::kable(cbind(classif.auc = 0.9499272, classif.auprc = 0.8274248)) %>%
+  kable_styling(position = "center")
+```
+
+The result went up a little, so I decided to keep this change
+
+# Imputation
+
+I've tried using imputation in order to use data properties to its limits. Firstly I tried using imputation with histogram.
+
+```{r hist, results = "hide"}
+task <- TaskClassif$new("sick", dat_t[indices_train, ], "sick", "sick")
+
+set.seed(1998)
+learner <- lrn("classif.rpart", cp = 0.005, minsplit = 10)
+learner$predict_type = "prob"
+
+po_imp_hist <- po("imputehist")
+task <- po_imp_hist$train(list(task))[[1]]
+```
+
+```{r hist_results, eval=FALSE, include=TRUE}
+result_t <- resample(task = task, learner = learner, resampling = resampling_outer)
+result_t$aggregate(measures)
+```
+
+
+```{r hist_print}
+knitr::kable(cbind(classif.auc = 0.9621942, classif.auprc = 0.8384416)) %>%
+  kable_styling(position = "center")
+```
+Then I've tried using `MICE` algorithm.
+
+```{r mice, results="hide"}
+task <- TaskClassif$new("sick", 
+                        cbind(
+                          complete(
+                            mice(
+                              dat_t[indices_train, -21])), 
+                          dat_t[indices_train, "sick"]), 
+                        "sick", "sick")
+
+set.seed(1998)
+learner <- lrn("classif.rpart", cp = 0.005, minsplit = 10)
+learner$predict_type = "prob"
+```
+
+```{r mice_results, eval=FALSE, include=TRUE}
+result_t <- resample(task = task, learner = learner, resampling = resampling_outer)
+result_t$aggregate(measures)
+```
+
+```{r mice_print}
+knitr::kable(cbind(classif.auc = 0.9282098, classif.auprc = 0.8036027)) %>%
+  kable_styling(position = "center")
+```
+
+It turned out that in this case using imputation with histogram gives better performance and lifts AUC a little while not decreasing AUPRC too much, so I decided to keep this change.
+
+# Oversampling
+
+At last, I've tried using generating artificial data in minority class using SMOTE algorithm.
+
+```{r smote, results="hide"}
+dat_m <- dat_t %>%
+  mutate_all(as.numeric) %>%
+  mutate(sick = dat_t$sick)
+
+task <- TaskClassif$new("sick", dat_m[indices_train, ], "sick", "sick")
+
+set.seed(1998)
+learner <- lrn("classif.rpart", cp = 0.005, minsplit = 10)
+learner$predict_type = "prob"
+
+po_imp_hist <- po("imputehist")
+task <- po_imp_hist$train(list(task))[[1]]
+
+po_smote <- po("smote", dup_size = 2)   # create twice as much positive class observations
+task <- po_smote$train(list(task))[[1]]
+```
+
+```{r smote_results, eval=FALSE, include=TRUE}
+result_t <- resample(task = task, learner = learner, resampling = resampling_outer)
+result_t$aggregate(measures)
+```
+
+```{r smote_print}
+knitr::kable(cbind(classif.auc = 0.9870872, classif.auprc = 0.9244521)) %>%
+  kable_styling(position = "center")
+```
+
+And this solution resulted in significant increase in both measures. However, we need to remember that oversampling may result in similar observations in both training and validation set and in consequence overfitting. To find out if it is easy to generalise, we have to check result on the test set.
+
+# Final results
+
+
+```{r use, results="hide", eval=FALSE, include=TRUE}
+task <- TaskClassif$new("sick", dat_m[indices_train, ], "sick", "sick")
+
+set.seed(1998)
+learner <- lrn("classif.rpart", cp = 0.001, minsplit = 10)
+learner$predict_type = "prob"
+
+po_imp_hist <- po("imputehist")
+task <- po_imp_hist$train(list(task))[[1]]
+
+po_smote <- po("smote", dup_size = 2)
+task <- po_smote$train(list(task))[[1]]
+enr_test_size <- nrow(task$data())
+
+# append test set
+task$rbind(dat_m[indices_test, ])
+
+task <- po("imputehist")$train(list(task))[[1]]
+
+learner$train(task, row_ids = 1:enr_test_size)
+prediction <- learner$predict(task, row_ids = (enr_test_size + 1):nrow(task$data()))
+```
+
+```{r use_results, eval=FALSE, include=TRUE}
+prediction$score(measures = list(msr("classif.auc"), msr("classif.auprc")))
+```
+
+And this is my final result:
+
+```{r use_print}
+knitr::kable(cbind(classif.auc = 0.8727906, classif.auprc = 0.7687503)) %>%
+  kable_styling(position = "center")
+```
