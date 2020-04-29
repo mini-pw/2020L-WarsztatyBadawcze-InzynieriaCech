@@ -40,7 +40,9 @@
 
 * 2020-04-24 - projekt: wstęp, literatura
 
-* 2020-04-29 - prezentacja PD2 + projekt: metodologia: https://us04web.zoom.us/j/2254905395
+* 2020-04-29 - prezentacja PD2 + projekt: metodologia: https://us02web.zoom.us/j/84042138146?pwd=RksrTmltcnhaMjJ2aU1TMEJQUlhKQT09
+Meeting ID: 840 4213 8146
+Password: 2DK7Uz
 
 * 2020-05-08 - projekt: checkpoint: metodologia i wstęp
 
