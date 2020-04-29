@@ -1,0 +1,192 @@
+---
+title: "Sick dataset analysis"
+author: "Mateusz Polakowski"
+date: "25 03 2020"
+output: html_document
+---
+
+```{r packages & data downloading, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+### Loading packages
+library(OpenML)
+library(dplyr)
+library(kableExtra)
+library(DataExplorer)
+library(funModeling)
+library(mice)
+library(mlr3)
+library(mlr3learners)
+library(mlr3measures)
+library(mlr3tuning)
+library(paradox)
+library(auprc)
+library(mlr3viz)
+
+### Downloading data
+set.seed(123)
+data <- getOMLDataSet(data.id = 38)
+sick <- data$data
+sick$Class <- as.factor(ifelse(sick$Class == "sick", 1, 0))
+sick$sex <- ifelse(sick$sex == "M", 1, 0)
+for (i in 1:ncol(sick)) {
+  if (!is.null(levels(sick[[i]]))) {
+    if (all(levels(sick[[i]]) %in% c("f", "t"))) {
+      sick[i] <- as.numeric(ifelse(sick[i] == 't', 1, 0))
+    }   
+  }
+}
+train_set <- read.table("indeksy_treningowe.txt", sep=" ", header = TRUE)$x
+test_set <- setdiff(1:3772, train_set)
+sick_train <- sick[train_set, ]
+sick_test <- sick[test_set, ]
+```
+
+# Data exploration & analysis
+
+```{r data entry analysis, echo = FALSE}
+### DataExplorer introduce functionality
+kable(DataExplorer::introduce(sick_train)[-9], 
+      caption = "Entry analysis of `sick` dataset") %>%
+  kable_styling(latex_options = "hold_position")
+
+### FunModelling df_status functionality
+df_temp <- df_status(sick_train, print_results = FALSE)
+df_temp <- df_temp[, !(names(df_temp) %in% c('q_zeros', 'q_na', 'q_inf'))]
+names(df_temp) <- c("Variable name", "Zeros p.c.", "NA p.c.", "Inf p.c.", "Variable type", "Unique values")
+kable(df_temp) %>% kable_styling(latex_options = "hold_position")
+  
+```
+
+## Basic *DataExplorer* plots
+```{r basic plots, echo = FALSE}
+DataExplorer::plot_histogram(sick)
+DataExplorer::plot_bar(sick)
+```
+
+
+## Dropping unnecesary columns
+```{r dropping columns, include = FALSE}
+sick_train <- sick_train %>% 
+    select(c(-TBG, -TBG_measured, -hypopituitary))
+sick_test <- sick_test %>% 
+    select(c(-TBG, -TBG_measured, -hypopituitary))
+```
+
+## Correcting mistakes and dealing with missing data
+```{r mistakes & imputation, include = FALSE, fig.align = 'left', fig.height = 7, warning = FALSE, echo = FALSE}
+### Fixing probable mistakes in age column
+sick_train <- sick_train %>% 
+    mutate(age = replace(age, age > 130 | age < 0, NA))
+sick_test <- sick_test %>% 
+    mutate(age = replace(age, age > 130 | age < 0, NA))
+
+### Dealing with data imputation via mice package
+sick_train_miced <- mice(sick_train, maxit = 100, method = 'pmm')
+sick_train_imputed <- complete(sick_train_miced)
+
+n <- nrow(sick_test)
+sick_all_trainimputed <- rbind(sick_test, sick_train_imputed)
+sick_all_miced <- mice(sick_test[, -27], maxit = 100, method = 'pmm')
+sick_all_imputed <- complete(sick_all_miced)
+sick_test_imputed <- cbind(sick_all_imputed[1:n,], Class=sick_test$Class)
+```
+
+```{r plotting}
+plot_missing(sick_train_imputed, title = "Missing data per variable in %")
+```
+
+# Models training & evaluation
+
+```{r models, include = FALSE, warning = FALSE, echo = FALSE}
+### Checking multiple solutions, everything based on mlr3 package
+task <- TaskClassif$new("sick", backend = sick_train_imputed, target = "Class", positive = '1')
+
+measure_auprc <- msr('classif.auprc')
+measure_auc <- msr('classif.auc')
+
+## Logistic Regression
+learner_logreg <- lrn("classif.log_reg", predict_sets = c('train', 'test'), predict_type = 'prob')
+learner_logreg$train(task)
+
+predictions_logreg_train <- learner_logreg$predict(task)
+predictions_logreg_test <- learner_logreg$predict_newdata(task, newdata = sick_test_imputed)
+
+score_logreg_train_auc <- predictions_logreg_train$score(measure_auc)
+score_logreg_test_auc <- predictions_logreg_test$score(measure_auc)
+score_logreg_train_auprc <- predictions_logreg_train$score(measure_auprc)
+score_logreg_test_auprc <- predictions_logreg_test$score(measure_auprc)
+
+## Decision tree
+learner_rpart <- lrn('classif.rpart', predict_sets = c('train', 'test'), predict_type = 'prob')
+
+# Some tuning
+tune_ps_rpart = ParamSet$new(list(
+  ParamInt$new("minsplit", lower=1, upper=50),
+  ParamInt$new("minbucket", lower=1, upper=30),
+  ParamDbl$new("cp", lower=0, upper = 1, default = 0.01),
+  ParamInt$new('maxcompete', lower = 1, upper = 20),
+  ParamInt$new('maxdepth', lower = 1, upper = 30)
+))
+
+rsmp_cv = rsmp("cv", folds = 5)
+r <- rsmp_cv$instantiate(task)
+evals30 = term("evals", n_evals = 30)
+
+instance = TuningInstance$new(
+  task = task,
+  learner = learner_rpart,
+  resampling = rsmp_cv,
+  measures = measure_auprc,
+  param_set = tune_ps_rpart,
+  terminator = evals30
+)
+
+tuner = tnr("random_search")
+results_rpart = tuner$tune(instance)
+learner_rpart$param_set$values = instance$result$params
+learner_rpart$train(task)
+
+predictions_rpart_train <- learner_rpart$predict(task)
+predictions_rpart_test <- learner_rpart$predict_newdata(task, newdata = sick_test_imputed)
+
+score_rpart_train_auc <- predictions_rpart_train$score(measure_auc)
+score_rpart_test_auc <- predictions_rpart_test$score(measure_auc)
+score_rpart_train_auprc <- predictions_rpart_train$score(measure_auprc)
+score_rpart_test_auprc <- predictions_rpart_test$score(measure_auprc)
+
+### Comparison to basic rpart: AUPRC == 0.73
+# library(rpart)
+# library(PRROC)
+# rpart_basic <- rpart(Class ~ ., data = sick_train_imputed, method="anova", model = TRUE)
+# predictions_rpart_basic <- predict(rpart_basic, sick_test_imputed)
+# 
+# predictions_rpart_basic_train <- learner_rpart$predict(task)
+# predictions_rpart_test <- learner_rpart$predict_newdata(task, newdata = sick_test_imputed)
+# 
+# score_rpart_train_auc <- predictions_rpart_train$score(measure_auc)
+# score_rpart_test_auc <- predictions_rpart_test$score(measure_auc)
+# score_rpart_train_auprc <- predictions_rpart_train$score(measure_auprc)
+# score_rpart_test_auprc <- predictions_rpart_test$score(measure_auprc)
+# 
+# auprc(predictions_rpart_basic, sick_test_imputed$Class, '1')
+```
+
+## Comparing measures
+
+```{r measures comparison, echo=FALSE}
+### Presenting results
+kable(data.frame(model = c("Logistic regression", "Decision trees"),
+                 auc = c(score_logreg_test_auc, score_rpart_test_auc), 
+                 auprc = c(score_logreg_test_auprc, score_rpart_test_auprc)), 
+      caption="Measures comparison accross models") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+## Decision tree AUC plot
+
+```{r roc plot, echo = FALSE}
+library(precrec)
+autoplot(predictions_rpart_train, type = "roc")
+```
+
