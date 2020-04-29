@@ -1,0 +1,985 @@
+---
+title: "Sick dataset analysis"
+author: "Hubert Baniecki"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::material:
+    highlight: kate
+    self_contained: true
+    code_folding: show
+    thumbnails: false
+    gallery: true
+    fig_width: 10
+    df_print: kable
+---
+  
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.height = 6, message = FALSE, warning = FALSE)
+
+library(OpenML)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(patchwork)
+library(PRROC)  #https://stats.stackexchange.com/a/226972
+library(DALEX)
+library(rpart)
+library(kableExtra)
+```
+
+
+```{r data, include = FALSE}
+openml_id <- 38 
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+
+index_raw <- read.table('index.txt')
+index <- unname(unlist(index_raw))
+```
+
+# Preprocessing
+
+## Remove columns:
+
+- `TBG`  has one value
+- `hypopituitary`  has only one value (apart form 1 row)
+- `TBG_measured`  is all  `NA`
+
+```{r preprocessing1}
+dataset_clean <- dataset_raw %>%
+  select(-TBG, -TBG_measured, -hypopituitary) # one value / NA only
+```
+
+## Transform columns:
+
+- `M, t, sick`  => `1`
+- `F, f, negative`  => `0`
+
+```{r preprocessing2}
+temp <- dataset_clean
+
+for (i in 1:ncol(temp)) {
+  if (!is.null(levels(temp[[i]]))) {
+    if (all(levels(temp[[i]]) %in% c("f", "t"))) {
+      temp[i] <- as.numeric(ifelse(temp[i] == 't', 1, 0))
+    }   
+  }
+}
+temp$sex <- ifelse(temp$sex == "M", 1, 0)
+temp$Class <- as.factor(ifelse(temp$Class == "sick", 1, 0))
+
+dataset <- temp
+```
+
+## Basic imputation (common sense):
+
+- `age` :  `454` and `NA` => `mean(age)`  (2 rows)
+- `sex` :  if  `pregnant==1`  then  `NA` => `0`   (2 rows)  
+
+```{r preprocessing3}
+dataset$age[dataset$age>100] <- mean(dataset$age[dataset$age<100], na.rm = TRUE) 
+dataset$age[is.na(dataset$age)] <- mean(dataset$age, na.rm = TRUE)
+dataset$sex[dataset$pregnant==1] <- 0
+```
+
+```{r missings, eval=FALSE, include = FALSE}
+# missing <- DataExplorer::plot_missing(dataset)
+# missing_info <- as.data.frame(missing$data)
+# missing_columns <- as.character(missing_info$feature[missing_info$num_missing>0])
+# full_columns <- setdiff(colnames(dataset_clean), missing_columns)
+# 
+# print(paste0("missing columns: ", stringi::stri_paste(missing_columns, collapse=", ")))
+# print(paste0("full columns: ", stringi::stri_paste(full_columns, collapse=", ")))
+```
+
+# Base Models 
+
+## base lm model
+
+It was bad. 
+
+```{r baselm, eval=FALSE, include = FALSE}
+## base lm model
+# temp <- dataset
+# temp$Class <- as.numeric(as.character(temp$Class))
+# temp <- DataExplorer::set_missing(temp, -1)
+# m_base <- glm(Class~., data = temp[index, ], family = 'binomial')
+# 
+# library(DALEX)
+# exp_base <- explain(m_base, data = temp[-index, ], y = temp$Class[-index])
+# model_performance(exp_base)
+# 
+# prob <- exp_base$y_hat
+# y_truth <- exp_base$y
+# positive_value <- 1
+# auprc::auprc(prob, y_truth, positive_value)
+# auprc::precision_recall_curve(prob, y_truth, positive_value)
+```
+
+## base rpart model
+
+```{r baserpart}
+temp <- dataset
+temp$Class <- as.numeric(as.character(temp$Class))
+train <- temp[index, ]
+test <- temp[-index, ]
+
+base_rpart <- rpart(Class~., data = train, method="anova", model = TRUE)
+```
+
+### The tree
+
+```{r}
+rpart.plot::rpart.plot(base_rpart)
+```
+
+<!-- ### Dominik auprc -->
+
+<!-- ```{r} -->
+<!-- prob <- exp_base_rpart$y_hat -->
+<!-- y_truth <- exp_base_rpart$y -->
+<!-- positive_value <- 1 -->
+<!-- auprc::auprc(prob, y_truth, positive_value) -->
+<!-- auprc::precision_recall_curve(prob, y_truth, positive_value) -->
+<!-- ``` -->
+
+### test
+
+```{r}
+exp_base_rpart <- explain(base_rpart,
+                          data = test,
+                          y = test$Class,
+                          model_info = list(type="classification"),
+                          verbose=FALSE)
+
+mp_test <- model_performance(exp_base_rpart)
+mp_test$measures[c('auc')]
+```
+
+Calculate auprc.
+
+```{r}
+prob <- predict(base_rpart, test)
+y_truth <- test$Class
+
+fg <- prob[y_truth == 1]
+bg <- prob[y_truth == 0]
+
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+plot(pr)
+```
+
+### train
+
+```{r}
+exp_train<- explain(base_rpart,
+                          data = train,
+                          y = train$Class,
+                          model_info = list(type="classification"),
+                          verbose=FALSE)
+
+mp_train <- model_performance(exp_train)
+mp_train$measures[c('auc')]
+```
+
+Calculate auprc.
+
+```{r}
+prob <- exp_train$y_hat
+y_truth <- exp_train$y
+
+fg <- prob[y_truth == 1]
+bg <- prob[y_truth == 0]
+
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+plot(pr)
+```
+
+## Feature importance
+
+Which columns are important? Can we remove some?
+
+```{r}
+data.frame(variable_importance=round(base_rpart$variable.importance,3))
+```
+
+# EDA
+
+## vis_binary
+
+Check if there are very similar columns (not really).
+
+```{r}
+dat_bin <- train %>% select(sex, on_thyroxine, query_on_thyroxine, on_antithyroid_medication, sick,
+                              pregnant, thyroid_surgery, I131_treatment, query_hypothyroid, query_hyperthyroid,
+                              lithium, goitre, tumor, psych, TSH_measured, T3_measured, TT4_measured, T4U_measured,
+                              FTI_measured, Class)
+visdat::vis_binary(dat_bin)
+
+```
+
+## Variable vs Target plots
+
+I aim to delete all binary columns. For every column I count `Class=1` rows in the minority class of this column.
+
+### referral_source
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = referral_source,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$referral_source[train$Class==1]=="STMW")
+```
+
+### tumor
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = tumor,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$tumor[train$Class==1]==1)
+```
+
+### I131_treatment
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = I131_treatment,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$I131_treatment[train$Class==1]==1)
+```
+
+### thyroid_surgery
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = thyroid_surgery,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$thyroid_surgery[train$Class==1]==1)
+```
+
+### on_antithyroid_medication
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = on_antithyroid_medication,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$on_antithyroid_medication[train$Class==1]==1)
+```
+
+### pregnant
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = pregnant,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$pregnant[train$Class==1]==1)
+```
+
+### goitre
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = goitre,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$goitre[train$Class==1]==1)
+```
+
+### lithium
+
+```{r echo=FALSE}
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = lithium,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$lithium[train$Class==1]==1)
+```
+
+Not present columns had a lot more diversity. **Leave unchanged: sex, sick, psych, on_thyroxine, query_on_thyroxine, query_hypothyroid, query_hyperthyroid.** 
+
+
+## Measured vs Values
+
+Here I focus on `TSH, TT4, T3, T4U, FTI` and corresponding `_measured` columns. Not measured means no value in the corresponding column. (measured `FALSE` => value `NA`)
+
+At first, I checked the density of `value` for each `Class`. I later tried to impute `mean(column)` for specific `Class=1/0` but it didn't change anything. 
+
+Secondly, I checked `_measured` columns . Below I aim to do the same as in the previous section.
+
+### TSH
+
+```{r echo=FALSE}
+ggstatsplot::ggbetweenstats(
+    data = dataset,
+    x = Class,
+    y = TSH,
+  messages = FALSE)
+
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = TSH_measured,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$TSH_measured[train$Class==1]==0)
+```
+
+### TT4
+
+```{r echo=FALSE}
+ggstatsplot::ggbetweenstats(
+    data = dataset,
+    x = Class,
+    y = TT4,
+  messages = FALSE)
+
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = TT4_measured,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$TT4_measured[train$Class==1]==0)
+```
+
+### T3
+
+```{r echo=FALSE}
+ggstatsplot::ggbetweenstats(
+    data = dataset,
+    x = Class,
+    y = T3,
+  messages = FALSE)
+
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = T3_measured,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$T3_measured[train$Class==1]==0)
+```
+
+### T4U
+
+```{r echo=FALSE}
+ggstatsplot::ggbetweenstats(
+    data = dataset,
+    x = Class,
+    y = T4U,
+  messages = FALSE)
+
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = T4U_measured,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$T4U_measured[train$Class==1]==0)
+```
+
+### FTI
+
+```{r echo=FALSE}
+ggstatsplot::ggbetweenstats(
+    data = dataset,
+    x = Class,
+    y = FTI,
+  messages = FALSE)
+
+ggstatsplot::ggpiestats(
+  data = train,
+  x = Class,
+  y = FTI_measured,
+  messages = FALSE)
+```
+
+```{r}
+sum(train$FTI_measured[train$Class==1]==0)
+```
+
+
+# Experiments
+
+## Experiment 1 - use EDA
+
+Now, I use the information from `EDA` to filter `train` rows before training the model and `test` rows before making the prediction. 
+
+After removing these rows, 13 columns will have only one value, so they can be removed.
+
+### pp()
+
+Filter "for sure* negative" and  remove 13 one-value columns.
+
+```{r}
+pp <- function(X) {
+  X1 <- X %>% filter(
+    referral_source=="STMW" | tumor==1 | I131_treatment==1 | thyroid_surgery==1 |
+    on_antithyroid_medication==1 | pregnant==1 | goitre==1 | lithium==1 |
+    TSH_measured==0 | TT4_measured==0 | T3_measured==0 | T4U_measured==0 | FTI_measured==0 
+  ) %>% select(-referral_source, -tumor, -I131_treatment, -thyroid_surgery,
+               -on_antithyroid_medication, -pregnant, -goitre, -lithium,
+               -TSH_measured, -TT4_measured, -T3_measured, -T4U_measured, -FTI_measured)
+  
+  X2 <- X %>% filter(
+    referral_source!="STMW" & tumor!=1 & I131_treatment!=1 & thyroid_surgery!=1 &
+    on_antithyroid_medication!=1 & pregnant!=1 & goitre!=1 & lithium!=1 &
+    TSH_measured!=0 & TT4_measured!=0 & T3_measured!=0 & T4U_measured!=0 & FTI_measured!=0 
+  ) %>% select(-referral_source, -tumor, -I131_treatment, -thyroid_surgery,
+               -on_antithyroid_medication, -pregnant, -goitre, -lithium,
+               -TSH_measured, -TT4_measured, -T3_measured, -T4U_measured, -FTI_measured)
+  
+  list(X1, X2)
+}
+
+```
+
+It works (rows are the same, columns are not the same)
+
+```{r}
+temp <- pp(dataset)
+dim(temp[[2]])+dim(temp[[1]])==dim(dataset)
+```
+
+### experiment1()
+
+This function uses `pp()` on both `train` and `test` to filter not needed rows. 
+
+`pp()` acts the same for both of the datasets and doesn't use additional information from `test`. 
+
+After that, `auc` and `auprc` are caluclated.
+
+```{r}
+experiment1 <- function(trainX, testX) {
+  
+  ## preprocess
+  pp_trainX <- pp(trainX) ## note: pp_trainX[1] is useless
+  pp_testX <- pp(testX) 
+  
+  ## first stage
+  first_testX <- pp_testX[[1]]
+  first_prob <- rep(mean(first_testX$Class), dim(first_testX)[1])
+  first_y_truth <- first_testX$Class
+  
+  ## second stage
+  second_testX <- pp_testX[[2]]
+  second_trainX <- pp_trainX[[2]]
+  
+  model <- rpart(Class~., data = second_trainX)
+  second_prob <- predict(model, second_testX)
+  second_y_truth <- second_testX$Class
+  
+  ## glue
+  prob <- c(first_prob, second_prob)
+  y_truth <- c(first_y_truth, second_y_truth)
+  
+  ## AUC and AUPRC
+  fg <- prob[y_truth == 1]
+  bg <- prob[y_truth == 0]
+  
+  # ROC Curve
+  roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auc <- roc$auc
+  # PR Curve
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auprc <- pr$auc.integral
+  
+  list(auc=auc,auprc=auprc)
+}
+
+temp <- dataset
+temp$Class <- as.numeric(as.character(temp$Class))
+train <- temp[index, ]
+test <- temp[-index, ]
+
+set.seed(123)
+sampling_index <- sample(1:dim(train)[1], dim(train)[1]/5) # take 20%
+ttrain <- train[-sampling_index,]
+ttest <- train[sampling_index,]
+
+t(data.frame("cv1"=round(unlist(experiment1(ttrain, ttest)),3)))
+
+t(data.frame("test"=round(unlist(experiment1(train, test)),3)))
+```
+
+Unfortunatelly this experiment **didn't work** (no point in doing more cv).
+
+## Experiment 2 - Try to upgrade the base model
+
+I tried:
+
+- subseting different groups of columns
+- multiple types of imputations
+- hyperparameter tuning
+
+First two didn't help at all. Tunning the parameters made the model worse (on test) because it was overfitted to the training data.
+
+# Final model
+
+## CV1 function
+
+```{r}
+cv1 <- function(trainX, testX) {
+  
+  model <- rpart(Class~., data = trainX)
+  prob <- predict(model, testX)
+  y_truth <- testX$Class
+  
+  ## AUC and AUPRC
+  fg <- prob[y_truth == 1]
+  bg <- prob[y_truth == 0]
+  
+  # ROC Curve
+  roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auc <- roc$auc
+  # PR Curve
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auprc <- pr$auc.integral
+  
+  list("auc"=auc, "auprc"=auprc)
+}
+
+temp <- dataset
+temp$Class <- as.numeric(as.character(temp$Class))
+train <- temp[index, ]
+test <- temp[-index, ]
+
+results_train <- data.frame()
+
+set.seed(123)
+
+#:# do 5CV on train
+for (i in 1:5) {
+  sample_index <- sample(1:dim(train)[1], dim(train)[1]/5) # 20%
+  ttrain <- train[-sample_index,]
+  ttest <- train[sample_index,]
+  ret <- cv1(ttrain, ttest)
+  results_train <- rbind(results_train, ret)
+}
+```
+
+## CV5 train
+
+```{r}
+t(data.frame("cv5"=round(unlist(colMeans(results_train)), 3)))
+```
+
+## test
+
+```{r}
+results_test <- cv1(train, test)
+
+t(data.frame("test"=round(unlist(results_test), 3)))
+```
+
+## Tree plot
+
+```{r}
+model <- rpart(Class~., data = train, model=TRUE)
+rpart.plot::rpart.plot(model)
+```
+
+
+# [2] Black-Box model
+
+## Preprocessing
+
+Remove `sex` column. Impute missing measured values with mean for each `Class`. Mean from `train` dataset is imputed for `train` and `test` datasets.
+
+```{r}
+temp <- dataset
+temp$Class <- as.numeric(as.character(temp$Class))
+temp$sex <- NULL
+
+ntrain <- temp[index,]
+ntest <- temp[-index,]
+
+mean_tsh_1 <- mean(ntrain$TSH[ntrain$Class==1], na.rm = TRUE)
+mean_tsh_0 <- mean(ntrain$TSH[ntrain$Class==0], na.rm = TRUE)
+ntrain$TSH[is.na(ntrain$TSH) & ntrain$Class==1] <- mean_tsh_1
+ntrain$TSH[is.na(ntrain$TSH) & ntrain$Class==0] <- mean_tsh_0
+ntest$TSH[is.na(ntest$TSH) & ntest$Class==1] <- mean_tsh_1
+ntest$TSH[is.na(ntest$TSH) & ntest$Class==0] <- mean_tsh_0
+
+mean_tt4_1 <- mean(ntrain$TT4[ntrain$Class==1], na.rm = TRUE)
+mean_tt4_0 <- mean(ntrain$TT4[ntrain$Class==0], na.rm = TRUE)
+ntrain$TT4[is.na(ntrain$TT4) & ntrain$Class==1] <- mean_tt4_1
+ntrain$TT4[is.na(ntrain$TT4) & ntrain$Class==0] <- mean_tt4_0
+ntest$TT4[is.na(ntest$TT4) & ntest$Class==1] <- mean_tt4_1
+ntest$TT4[is.na(ntest$TT4) & ntest$Class==0] <- mean_tt4_0
+
+mean_t4u_1 <- mean(ntrain$T4U[ntrain$Class==1], na.rm = TRUE)
+mean_t4u_0 <- mean(ntrain$T4U[ntrain$Class==0], na.rm = TRUE)
+ntrain$T4U[is.na(ntrain$T4U) & ntrain$Class==1] <- mean_tsh_1
+ntrain$T4U[is.na(ntrain$T4U) & ntrain$Class==0] <- mean_tsh_0
+ntest$T4U[is.na(ntest$T4U) & ntest$Class==1] <- mean_tsh_1
+ntest$T4U[is.na(ntest$T4U) & ntest$Class==0] <- mean_tsh_0
+
+mean_t3_1 <- mean(ntrain$T3[ntrain$Class==1], na.rm = TRUE)
+mean_t3_0 <- mean(ntrain$T3[ntrain$Class==0], na.rm = TRUE)
+ntrain$T3[is.na(ntrain$T3) & ntrain$Class==1] <- mean_t3_1
+ntrain$T3[is.na(ntrain$T3) & ntrain$Class==0] <- mean_t3_0
+ntest$T3[is.na(ntest$T3) & ntest$Class==1] <- mean_t3_1
+ntest$T3[is.na(ntest$T3) & ntest$Class==0] <- mean_t3_0
+
+mean_fti_1 <- mean(ntrain$FTI[ntrain$Class==1], na.rm = TRUE)
+mean_fti_0 <- mean(ntrain$FTI[ntrain$Class==0], na.rm = TRUE)
+ntrain$FTI[is.na(ntrain$FTI) & ntrain$Class==1] <- mean_fti_1
+ntrain$FTI[is.na(ntrain$FTI) & ntrain$Class==0] <- mean_fti_0
+ntest$FTI[is.na(ntest$FTI) & ntest$Class==1] <- mean_fti_1
+ntest$FTI[is.na(ntest$FTI) & ntest$Class==0] <- mean_fti_0
+
+wbtrain <- ntrain
+wbtest <- ntest
+
+ntrain[,c('TSH_measured','FTI_measured',"T3_measured", "TT4_measured","T4U_measured")] <- NULL
+ntest[,c('TSH_measured','FTI_measured',"T3_measured", "TT4_measured","T4U_measured")] <- NULL
+```
+
+```{r echo=FALSE}
+cv1 <- function(model, testX, type="ranger") {
+  
+  if (type=="ranger") {
+    pp <- predict(model, testX)
+    prob <- pp$predictions[,2] 
+  } else if (type=="svm") {
+    pp <- predict(model, testX, type='prob')
+    prob <- pp$.pred_1   
+  } else if (type=="h2o") {
+    prob <- unlist(as.data.frame(predict(model, as.h2o(testX))[,3]))
+  }
+  y_truth <- testX$Class
+  
+  ## AUC and AUPRC
+  fg <- prob[y_truth == 1]
+  bg <- prob[y_truth == 0]
+  
+  # ROC Curve
+  roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auc <- roc$auc
+  # PR Curve
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auprc <- pr$auc.integral
+  
+  list("auc"=auc, "auprc"=auprc)
+}
+```
+
+## Default ranger model
+
+```{r}
+library(ranger)
+library(DALEX)
+ranger_model <- ranger(Class~., data = ntrain, probability = TRUE)
+exp_ranger <- explain(ranger_model, data=ntest, y=ntest$Class,
+                      label = "black-box",
+                         verbose = FALSE)
+```
+
+CV5 Train score:
+
+```{r echo=FALSE}
+for (i in 1:5) {
+  sample_index <- sample(1:dim(ntrain)[1], dim(ntrain)[1]/5) # 20%
+  ttrain <- ntrain[-sample_index,]
+  ttest <- ntrain[sample_index,]
+  tmodel <- ranger(Class~., data = ttrain, probability = TRUE)
+  ret <- cv1(tmodel, ttest)
+  results_train <- rbind(results_train, ret)
+}
+t(data.frame("cv5"=round(unlist(colMeans(results_train)), 3)))
+```
+
+Test score:
+ 
+```{r echo=FALSE}
+results_test <- cv1(ranger_model, ntest)
+
+t(data.frame("test"=round(unlist(results_test), 3)))
+```
+
+## SVM model tuned with Bayes (bad)
+
+```{r}
+library(tidymodels)
+library(tune)
+library(kernlab)
+
+set.seed(123)
+ntrain$Class <- as.factor(ntrain$Class)
+folds <- vfold_cv(ntrain, v = 3, repeats = 10)
+
+seg_pre_proc <-
+  recipe(Class ~ ., data = ntrain) %>%
+  step_dummy(all_nominal(), -Class) %>%
+  step_YeoJohnson(all_predictors()) %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), num_comp = tune()) %>%
+  step_downsample(Class)
+
+svm_mod <-
+  svm_rbf(mode = "classification", cost = tune(), rbf_sigma = tune()) %>%
+  set_engine("kernlab")
+
+library(workflows) 
+
+svm_wflow <-
+  workflow() %>%
+  add_model(svm_mod) %>%
+  add_recipe(seg_pre_proc)
+
+svm_set <- parameters(svm_wflow)
+svm_set <- svm_set %>% update(num_comp = num_comp(c(2, 5)))
+
+set.seed(123)
+search_res <- 
+  tune_bayes(
+    svm_wflow, 
+    resamples = folds,
+    param_info = svm_set,
+    initial = 3,
+    iter = 5,
+    metrics = metric_set(pr_auc),
+    control = control_bayes(no_improve = 20, verbose = TRUE)
+  )
+```
+
+CV Train score:
+
+```{r echo=FALSE}
+knitr::kable(show_best(search_res, metric = "pr_auc"), digits = 3) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+#autoplot(search_res, type = "performance")
+```
+
+Some test scores:
+
+```{r echo=FALSE}
+#params <- select_best(search_res, metric = "pr_auc")
+for (i in 1:3) {
+  params <- show_best(search_res, metric = "pr_auc")[i,1:3]
+
+  svm_new <- svm_rbf(mode = "classification", cost = NULL, rbf_sigma = NULL) %>%
+    set_engine("kernlab")
+  update(svm_new, params[,1:2])
+  
+  seg_pre_proc_new <-
+    recipe(Class ~ ., data = ntrain) %>%
+    step_dummy(all_nominal(), -Class) %>%
+    step_YeoJohnson(all_predictors()) %>%
+    step_normalize(all_predictors()) %>%
+    step_pca(all_predictors(), num_comp = params[,3]) %>%
+    step_downsample(Class)
+  
+  svm_wflow_new <-
+    workflow() %>%
+    add_model(svm_new) %>%
+    add_recipe(seg_pre_proc_new)
+  
+  model_new <- fit(svm_wflow_new, ntrain)
+  print(t(data.frame("test"=round(unlist(cv1(model_new, ntest, type="svm")), 3))))  
+}
+
+```
+
+## H2O AutoML (best)
+
+```{r results="hide"}
+# load packages and data
+library(h2o)
+library(DALEXtra)
+
+# init h2o
+h2o.init()
+```
+
+```{r}
+h2o.no_progress()
+
+automl <- h2o.automl(y = "Class", training_frame = as.h2o(ntrain), max_runtime_secs = 180,
+                     stopping_metric = "AUCPR", sort_metric = "AUCPR", seed=1, balance_classes = T,
+                     max_after_balance_size = 5.0)
+
+h2o_model <- automl@leader
+
+predict_function = function(model, data) {
+  return(unlist(as.data.frame(predict(model, as.h2o(data))[,3])))
+}
+
+explainer_h2o <- explain_h2o(h2o_model,
+                         data = ntest,
+                         y = ntest$Class,
+                         predict_function = predict_function,
+                         label = "automl",
+                         verbose = FALSE)
+```
+
+CV Train score:
+
+```{r echo=FALSE}
+knitr::kable(as.data.frame(automl@leaderboard)[1,], digits = 3) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Test score:
+
+```{r echo=FALSE}
+results_test <- cv1(h2o_model, ntest, type="h2o")
+
+t(data.frame("test"=round(unlist(results_test), 3)))
+```
+
+AUPRC curve:
+
+```{r echo=FALSE}
+prob <- explainer_h2o$y_hat
+y_truth <- explainer_h2o$y
+
+fg <- prob[y_truth == 1]
+bg <- prob[y_truth == 0]
+
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr$auc.integral
+plot(pr)
+```
+
+# [2] Comparisons
+
+## White-Box model
+
+Data changed a little so White-Box model will be different (on paper worse, but more robust).
+
+```{r}
+wb_model <- rpart(Class~., data = wbtrain, model=TRUE)
+exp_wb <- explain(wb_model, data=wbtest, y=wbtest$Class, type='classfication',
+                  label = "white-box",
+                         verbose = FALSE)
+```
+
+## Model Performance
+
+```{r}
+plot(model_performance(explainer_h2o), model_performance(exp_wb), model_performance(exp_ranger), geom = "boxplot",
+     lossFunction=mean) + scale_y_continuous(trans = 'log10')
+```
+
+White-Box on test:
+
+```{r echo=FALSE}
+tempfunc <- function(trainX, testX) {
+  
+  model <- rpart(Class~., data = trainX)
+  prob <- predict(model, testX)
+  y_truth <- testX$Class
+  
+  ## AUC and AUPRC
+  fg <- prob[y_truth == 1]
+  bg <- prob[y_truth == 0]
+  
+  # ROC Curve
+  roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auc <- roc$auc
+  # PR Curve
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  auprc <- pr$auc.integral
+  
+  list("auc"=auc, "auprc"=auprc)
+}
+
+tempfunc(wbtrain, wbtest)
+```
+
+AutoML on test:
+
+```{r echo=FALSE}
+cv1(h2o_model, ntest, type="h2o")
+```
+
+## Feature Importance
+
+```{r}
+plot(model_parts(explainer_h2o), model_parts(exp_wb), model_parts(exp_ranger), max_vars=6)
+```
+
+## Partial Dependence
+
+```{r fig.height=12}
+library(ingredients)
+pdp_h2o <- partial_dependence(explainer_h2o, variables=c("T3", "TT4", "age", "TSH","FTI", "T4U"))
+pdp_ranger <- partial_dependence(exp_ranger, variables=c("T3", "TT4", "age", "TSH","FTI", "T4U"))
+pdp_wb <- partial_dependence(exp_wb, variables=c("T3", "TT4", "age", "TSH","FTI", "T4U"))
+
+plot(pdp_h2o, pdp_ranger, pdp_wb, facet_ncol=2)
+```
+
+```{r}
+pdp_h2o_cat <- partial_dependence(explainer_h2o, variables=c("referral_source"))
+pdp_ranger_cat <- partial_dependence(exp_ranger, variables=c("referral_source"))
+pdp_wb_cat <- partial_dependence(exp_wb, variables=c("referral_source"))
+
+plot(pdp_h2o_cat, pdp_ranger_cat, pdp_wb_cat)
+```
+
+## Conclusions
+
+Overall, we can see that the best model chosen by H2O.AutoML (GBM of some sort) uses more variables than other models. Single variables are less important and they contribute less to predicted values. Probably, model behaviour is influenced more by the interactions between multiple variables. GBM predictions are more precise; it achieves over `0.99` auc and `0.95` auprc on both train and test. 
+
+### oświadczenie
+
+Potwierdzam samodzielność powyższej pracy oraz niekorzystanie przeze mnie z niedozwolonych źródeł. Hubert Baniecki
