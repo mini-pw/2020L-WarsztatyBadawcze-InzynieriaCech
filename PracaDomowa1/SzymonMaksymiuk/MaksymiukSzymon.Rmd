@@ -55,14 +55,17 @@ Before we move forward I would like to transform columns. I want factors with 2 
 
 ```{r}
 for (i in 1:ncol(dataset_raw)) {
-  if (!is.null(levels(dataset_raw[[i]]))) {
-    if (all(levels(dataset_raw[[i]]) %in% c("f", "t"))) {
-      dataset_raw[i] <- as.numeric(ifelse(dataset_raw[i] == 't', 1, 0))
-    }   
+  if (!is.null(levels(dataset_raw[,i]))) {
+    if (all(levels(dataset_raw[,i]) %in% c("f", "t"))) {
+      dataset_raw[,i] <- as.numeric(ifelse(dataset_raw[,i] == 't', 1, 0))
+    } else if (all(levels(dataset_raw[,i]) %in% c("sick", "negative"))) {
+      dataset_raw[,i] <- as.numeric(ifelse(dataset_raw[,i] == 'sick', 1, 0))
+    } else if (all(levels(dataset_raw[,i]) %in% c("F", "M"))) {
+      dataset_raw[,i] <- as.numeric(ifelse(dataset_raw[,i] == 'M', 1, 0))
+    }
   }
 }
-dataset_raw$sex <- ifelse(dataset_raw$sex == "M", 1, 0)
-dataset_raw$Class <- as.factor(ifelse(dataset_raw$Class == "sick", 1, 0))
+dataset_raw$Class <- as.factor(dataset_raw$Class)
 ```
 
 ```{r warning=FALSE}

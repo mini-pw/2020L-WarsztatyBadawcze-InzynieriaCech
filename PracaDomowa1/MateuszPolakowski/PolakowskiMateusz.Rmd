@@ -24,9 +24,18 @@ library(auprc)
 library(mlr3viz)
 
 ### Downloading data
-set.seed(1410)
+set.seed(123)
 data <- getOMLDataSet(data.id = 38)
 sick <- data$data
+sick$Class <- as.factor(ifelse(sick$Class == "sick", 1, 0))
+sick$sex <- ifelse(sick$sex == "M", 1, 0)
+for (i in 1:ncol(sick)) {
+  if (!is.null(levels(sick[[i]]))) {
+    if (all(levels(sick[[i]]) %in% c("f", "t"))) {
+      sick[i] <- as.numeric(ifelse(sick[i] == 't', 1, 0))
+    }   
+  }
+}
 train_set <- read.table("indeksy_treningowe.txt", sep=" ", header = TRUE)$x
 test_set <- setdiff(1:3772, train_set)
 sick_train <- sick[train_set, ]
@@ -91,7 +100,7 @@ plot_missing(sick_train_imputed, title = "Missing data per variable in %")
 
 ```{r models, include = FALSE, warning = FALSE, echo = FALSE}
 ### Checking multiple solutions, everything based on mlr3 package
-task <- TaskClassif$new("sick", backend = sick_train_imputed, target = "Class", positive = 'sick')
+task <- TaskClassif$new("sick", backend = sick_train_imputed, target = "Class", positive = '1')
 
 measure_auprc <- msr('classif.auprc')
 measure_auc <- msr('classif.auc')
@@ -113,22 +122,24 @@ learner_rpart <- lrn('classif.rpart', predict_sets = c('train', 'test'), predict
 
 # Some tuning
 tune_ps_rpart = ParamSet$new(list(
-  ParamInt$new("minsplit", lower=1, upper=50, default = 20),
+  ParamInt$new("minsplit", lower=1, upper=50),
   ParamInt$new("minbucket", lower=1, upper=30),
-  ParamDbl$new("cp", lower=0, upper = 1, default = 0.01)
+  ParamDbl$new("cp", lower=0, upper = 1, default = 0.01),
+  ParamInt$new('maxcompete', lower = 1, upper = 20),
+  ParamInt$new('maxdepth', lower = 1, upper = 30)
 ))
 
 rsmp_cv = rsmp("cv", folds = 5)
 r <- rsmp_cv$instantiate(task)
-evals20 = term("evals", n_evals = 20)
+evals30 = term("evals", n_evals = 30)
 
 instance = TuningInstance$new(
   task = task,
   learner = learner_rpart,
   resampling = rsmp_cv,
-  measures = measure_auc,
+  measures = measure_auprc,
   param_set = tune_ps_rpart,
-  terminator = evals20
+  terminator = evals30
 )
 
 tuner = tnr("random_search")
@@ -143,6 +154,22 @@ score_rpart_train_auc <- predictions_rpart_train$score(measure_auc)
 score_rpart_test_auc <- predictions_rpart_test$score(measure_auc)
 score_rpart_train_auprc <- predictions_rpart_train$score(measure_auprc)
 score_rpart_test_auprc <- predictions_rpart_test$score(measure_auprc)
+
+### Comparison to basic rpart: AUPRC == 0.73
+# library(rpart)
+# library(PRROC)
+# rpart_basic <- rpart(Class ~ ., data = sick_train_imputed, method="anova", model = TRUE)
+# predictions_rpart_basic <- predict(rpart_basic, sick_test_imputed)
+# 
+# predictions_rpart_basic_train <- learner_rpart$predict(task)
+# predictions_rpart_test <- learner_rpart$predict_newdata(task, newdata = sick_test_imputed)
+# 
+# score_rpart_train_auc <- predictions_rpart_train$score(measure_auc)
+# score_rpart_test_auc <- predictions_rpart_test$score(measure_auc)
+# score_rpart_train_auprc <- predictions_rpart_train$score(measure_auprc)
+# score_rpart_test_auprc <- predictions_rpart_test$score(measure_auprc)
+# 
+# auprc(predictions_rpart_basic, sick_test_imputed$Class, '1')
 ```
 
 ## Comparing measures

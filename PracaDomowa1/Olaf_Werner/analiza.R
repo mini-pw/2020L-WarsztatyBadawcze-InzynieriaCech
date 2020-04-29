@@ -181,4 +181,10 @@ c(temp$auc,temp$auprc)
 temp2<-tibble(score=c(temp$auc,temp$auprc),measure=c(rep("auc",5),rep("auprc",5)))
 
 ggplot(data = temp2,aes(x=score),group_by=measure)+geom_boxplot()
+
+
+data_frame(score=score_rpart_random,type=c("auc.cross","auprc.cross","auc.test","auprc.test"))
   
+
+
+
