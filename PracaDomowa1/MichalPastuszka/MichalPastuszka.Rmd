@@ -1,0 +1,191 @@
+---
+title: "Sick dataset analysis"
+author: "Michał Pastuszka"
+date: "25 03 2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(caret)
+library(PRROC)
+library(corrplot)
+library(glmnet)
+```
+
+
+```{r data, include = FALSE, cache=TRUE}
+
+set.seed(10)
+
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+
+```
+
+```{r plot, warning=F}
+
+DataExplorer::plot_histogram(dataset_raw)
+
+DataExplorer::plot_bar(dataset_raw)
+
+```
+
+# Preprocessing
+
+```{r preprocessing, include = FALSE}
+
+dataset <- dataset_raw %>% 
+  # drop 'TBG' - it is an empty column:
+  select(-TBG) %>%
+  #drop 'TBG_measured' - it contains only one value:
+  select(-TBG_measured)
+
+```
+
+```{r missings}
+
+gg_miss_var(dataset, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+```
+
+```{r onehot}
+# variable referral_source is a vactor with more than two values - lets try one-hot encoding
+dmy <- dummyVars(~referral_source , data = dataset)
+new_vars <- predict(dmy, dataset)
+dataset <- dataset %>% select(-referral_source)
+dataset <- cbind(dataset, new_vars)
+```
+
+```{r corelation}
+cors <- cor(sapply(dataset, as.numeric, MARGIN=2), use = "pairwise.complete.obs")
+corrplot(cors)
+```
+
+Variables FTI_measured and T4U measured are very strongly correlated. We will remove one of them
+we will also remove referral_source.other, as it is reduntant.
+
+```{r drop_corelated}
+dataset <- dataset %>%
+           select(-FTI_measured) %>%
+           select(-referral_source.other)
+```
+
+## Splitting data
+```{r split}
+train_indices <- read.csv('indeksy_treningowe.txt', sep = ' ', row.names = 1, header = TRUE)
+dataset_train <- dataset[train_indices$x,]
+dataset_test <- dataset[-train_indices$x,]
+```
+
+```{r drop}
+which(dataset_train$hypopituitary=='t')
+```
+
+It turns out that the data in our training set only contains one level of the variable hypopituitary. We should remove it too.
+
+```{r drop_hypopituitary}
+# variable hypopituary contains only one value in training set - we have to drop it
+dataset_train <- dataset_train %>% 
+  select(-hypopituitary)
+dataset_test <- dataset_test %>% 
+  select(-hypopituitary)
+```
+
+## Imputation
+We will impute missing values using their means calculated on training data. As there is only one missing value in the variable sex, we will replace it with female, as it is more frequent in our set.
+```{r simpleimput}
+# Let's start by imputing missing values with means and most frequent categories.
+table(dataset$sex)
+dataset_train$sex <- dataset_train$sex %>% replace_na('F')
+dataset_test$sex <- dataset_test$sex %>% replace_na('F')
+dataset_test$age <- dataset_test$age %>% replace_na(mean(dataset_train$age, na.rm = TRUE))
+dataset_train_mean <- dataset_train
+dataset_test_mean <- dataset_test
+
+
+columns_missing <- c('T3', 'T4U', 'TSH', 'TT4', 'age', 'FTI')
+for(col in columns_missing){
+  avg <- mean(dataset_train_mean[,col], na.rm = TRUE)
+  dataset_train_mean[,col] <- dataset_train_mean[,col] %>% replace_na(avg)
+  dataset_test_mean[,col] <- dataset_test_mean[,col] %>% replace_na(avg)
+}
+```
+
+# Testing models
+
+We will start using a simple logistic regression model.
+```{r first_model, error=TRUE}
+get_prauc <- function(responses, test_set){
+  fg <- responses[test_set$Class == 'sick']
+  bg <- responses[test_set$Class == 'negative']
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  plot(pr)
+}
+
+logr <- glm(Class~., data=dataset_train_mean, family = 'binomial')
+probs <- predict(logr, dataset_test_mean, type = 'response')
+
+get_prauc(probs, dataset_test_mean)
+```
+
+Let's see, if using a more advanced imputing technique improves our PRAUC score. We well use bagging tree imputation from the caret library, as it allows us to train it only on our training set, and apply the transformation to new data. Some more advanced libraries, such as MICE, don't have that functionality.
+
+```{r bag, error=TRUE}
+
+centerer_bag <- preProcess(dataset_train, method = c('bagImpute'))
+dataset_train_bag <- predict(centerer_bag, dataset_train)
+dataset_test_bag <- predict(centerer_bag, dataset_test)
+
+
+logr <- glm(Class~., data=dataset_train_bag, family = 'binomial')
+probs <- predict(logr, dataset_test_bag, type = 'response')
+get_prauc(probs, dataset_test_bag)
+```
+
+We will now try to remove some outlying observations using the studentized residuals method. We will remove observations with residuals larger than 2.6.
+
+```{r outliers}
+logr <- glm(Class~., data=dataset_train_bag, family = 'binomial')
+wh <- which(abs(rstudent(logr)) > 2.6)
+logr <- glm(Class~., data=dataset_train_bag, family = 'binomial', subset = -wh)
+probs <- predict(logr, dataset_test_bag, type = 'response')
+get_prauc(probs, dataset_test_bag)
+```
+
+Let's try removing some variables using the Bayesian information criterion.
+
+```{r bic, cache=TRUE}
+
+logr <- step(logr, direction = 'both', k=log(nrow(dataset_train_bag)-length(wh)), trace=FALSE)
+formula(logr)
+form <- formula(logr)
+probs <- predict(logr, dataset_test_bag, type = 'response')
+get_prauc(probs, dataset_test_bag)
+```
+We were able to remove a majority of the variables, while still slightly improving our score.
+
+Let's see of our final model:
+```{r summary}
+logr
+```

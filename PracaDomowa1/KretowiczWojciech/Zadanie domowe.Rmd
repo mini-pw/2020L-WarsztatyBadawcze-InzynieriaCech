@@ -1,0 +1,154 @@
+---
+title: "Zadanie domowe 1"
+author: "Wojciech Kretowicz"
+date: "17 kwietnia 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+source("Zadanie domowe 1.R")
+```
+
+# Glance at the data
+
+```{r, echo=FALSE}
+data = OpenML::getOMLDataSet(38)$data
+data$Class = as.numeric(data$Class)-1
+train = read.csv2("https://raw.githubusercontent.com/mini-pw/2020L-WarsztatyBadawcze-InzynieriaCech/master/PracaDomowa1/indeksy_treningowe.txt",
+                  sep = ' ')[,1]
+
+data_train = data[train,]
+data_test = data[-train,]
+```
+
+```{r}
+par(mfrow=c(2,2))
+hist(data$TSH)
+hist(data$T3)
+hist(data$TT4)
+hist(data$FTI)
+```
+
+# Preprocessing
+
+## Laboratory tests
+
+First, I checked laboratory tests to find out, what are possible values of hormones in a human body. Taking very large margin, I chose following values:
+
+* $TSH < 100$
+* $T3 < 30$
+* $TT4 < 400$
+* $FTI < 400$
+
+## Distributions
+
+Furthermore, I transformed all numerical values with boxcox trasformation, resulting in these distributions:
+
+```{r, echo=FALSE}
+data_train = data[train,]
+data_test = data[-train,]
+
+data_train = preprocess(data_train)
+data_test = preprocess(data_test)
+```
+
+```{r}
+par(mfrow=c(2,2))
+hist(data_train$TSH)
+hist(data_train$T3)
+hist(data_train$TT4)
+hist(data_train$FTI)
+```
+
+
+## Missing values
+
+At this moment missing values and features with suffix "measured" are negligible - there are only 2 features with missing values with aroung 3% of missing values. I used mice package with 'pmm' method to fill these. Them I dropped all features with suffix 'measure'.
+
+## Black box
+
+I have constructed black box with "ranger" and explained it to make accumulated dependency plot and feature importance. It showed me the most important variables in this task.
+
+```{r}
+library(DALEX)
+library(ranger)
+black_box = ranger(Class~., data=data_train, num.trees = 10000)
+exp = explain(black_box, data_train[,-25],data_train$Class, verbose=FALSE)
+library(ingredients)
+acc = ingredients::accumulated_dependency(exp, variables = c("age", "sex", "on_thyroxine", "query_on_thyroxine", "on_antithyroid_medication", "pregnant", "thyroid_surgery", "I131_treatment", "query_hypothyroid",         "query_hyperthyroid", "lithium", "goitre", "tumor", "psych", "TSH", "T3", "TT4", "T4U", "FTI"))
+plot(acc)
+```
+
+```{r}
+fi = ingredients::feature_importance(exp)
+plot(fi)
+```
+
+## Model
+
+I have chosen logistic regression and rpart for modelling, because both are easily interpretable. However, rpart had much better results.
+
+## Feature engineering
+
+I added few more features based on cross val scores of auprc and black box explanation:
+
+* $T3^2
+* $T4U^2
+* $TT4^2
+* $T3/FTI$
+
+## Tuning
+
+I used random search for tuning rpart.
+
+## Results
+
+After all I have got on 5-cv:
+
+* AUPRC: $92.9 +- 4.1$
+* AUROC: $96.2 +- 2.9$
+
+And on the test set:
+
+* AUPRC: $91.3$
+* AUROC: $49.1$?
+
+```{r, echo=FALSE}
+data_train_mod$Class = as.factor(data_train_mod$Class)
+task = mlr::makeClassifTask(data=data_train_mod, target = 'Class')
+model = mlr::makeLearner('classif.rpart', predict.type = 'prob')
+params = makeParamSet( 
+  makeDiscreteParam("minsplit", values=seq(5,10,1)), makeDiscreteParam("minbucket", values=seq(round(5/3,0), round(10/3,0), 1)), 
+  makeNumericParam("cp", lower = 0.01, upper = 0.05), makeDiscreteParam("maxcompete", values=6), makeDiscreteParam("usesurrogate", values=0), makeDiscreteParam("maxdepth", values=10) )
+ctrl = makeTuneControlGrid()
+rdesc = makeResampleDesc("CV", iters = 5L, stratify=TRUE)
+set.seed(77) 
+dt_tuneparam <- tuneParams(learner=model, 
+                            resampling=rdesc, 
+                            measures=list(tpr,auc, fnr, mmce, tnr, setAggregation(tpr, test.sd)), 
+                            par.set=params, 
+                            control=ctrl, 
+                            task=task, 
+                            show.info = FALSE)
+
+dt_tuneparam$x
+model = mlr::makeLearner('classif.rpart', predict.type = 'prob', par.vals = dt_tuneparam$x)
+model = train(model, task)
+data_test_mod$Class = as.factor(data_test_mod$Class)
+task_test = mlr::makeClassifTask(data=data_test_mod, target = 'Class')
+probs = predict(model, task)$data$prob.1
+fg = probs[data_test$Class == 0]
+bg = probs[data_test$Class == 1]
+```
+
+```{r}
+# ROC Curve    
+roc <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(roc)
+
+# PR Curve
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(pr)
+```
