@@ -46,9 +46,9 @@ Password: 2DK7Uz
 
 * 2020-05-08 - projekt: checkpoint: metodologia i wstęp
 
-* 2020-05-12 - projekt
+* 2020-05-12 - projekt: prezentacje rozdziałów z artykułów: mocne strony i punkty do poprawy
 
-* 2020-05-15 - projekt
+* 2020-05-15 - projekt: prezentacje rozdziałów z artykułów: mocne strony i punkty do poprawy
 
 ** 2020-05-21 - Lighting talk na wykładzie artykułu
 
