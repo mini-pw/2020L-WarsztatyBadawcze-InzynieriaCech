@@ -46,7 +46,7 @@ Password: 2DK7Uz
 
 * 2020-05-08 - projekt: checkpoint: metodologia i wstęp  https://us04web.zoom.us/j/2254905395
 
-* 2020-05-12 - projekt: prezentacje rozdziałów z artykułów: mocne strony i punkty do poprawy
+* 2020-05-12 - projekt: prezentacje rozdziałów z artykułów: mocne strony i punkty do poprawy  https://us04web.zoom.us/j/2254905395
 
 * 2020-05-15 - projekt: prezentacje rozdziałów z artykułów: mocne strony i punkty do poprawy
 
