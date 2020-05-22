@@ -1,0 +1,424 @@
+---
+title: "Sick dataset analysis"
+author: "Bogdan Jastrzębski"
+date: "26 kwietnia 2020 r."
+output:
+  bookdown::pdf_book:
+    number_sections: TRUE
+    toc: true
+    fig_caption: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, echo = FALSE, message=FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(DALEX)
+library(GGally)
+library(gridExtra)
+library(auprc)
+library(e1071)
+library(rpart.plot)
+library(imputeTS)
+```
+
+
+```{r data, echo = FALSE, message=FALSE, warning = FALSE, include = FALSE}
+set.seed(10)
+sick <- getOMLDataSet(data.name = "sick")$data
+
+I <- read.table("indeksy_treningowe.txt")
+i <- I$x
+
+sick_tidy <- sick %>%
+  dplyr::select(-TBG,
+         -TBG_measured,
+         -FTI_measured,
+         -T4U_measured,
+         -TT4_measured,
+         -T3_measured,
+         -TSH_measured)
+
+sick_tidy <- sick_tidy %>% 
+  dplyr::select(-hypopituitary)
+
+ind <- 1:nrow(sick_tidy) %in% i
+
+sick_tidy <- cbind(sick_tidy, ind)
+
+sick_tidy <- sick_tidy %>% na.exclude()
+
+sick_t <- sick_tidy %>%
+  mutate(log_TSH = log(TSH),
+         sqrt_T3 = sqrt(T3),
+         sqrt_TT4 = sqrt(TT4),
+         log_T4U = log(T4U),
+         sqrt_FTI = sqrt(FTI)) %>% 
+  dplyr::select(-TSH, -T3, -TT4, -T4U, -FTI)
+
+#############################################
+sick_t <- sick_t %>% mutate(sex = sex == "F",
+                  on_thyroxine = on_thyroxine == "t",
+                  query_on_thyroxine = query_on_thyroxine == "t",
+                  on_antithyroid_medication = on_antithyroid_medication == "t",
+                  sick = sick == "t",
+                  pregnant = pregnant == "t",
+                  thyroid_surgery = thyroid_surgery == "t",
+                  I131_treatment  = I131_treatment  == "t",
+                  query_hypothyroid  = query_hypothyroid  == "t",
+                  query_hyperthyroid  = query_hyperthyroid  == "t",
+                  lithium  = lithium  == "t",
+                  goitre = goitre  == "t",
+                  tumor = tumor  == "t",
+                  psych = psych  == "t",
+                  Class = Class == 'sick') %>%
+  cbind(createDummyFeatures(sick_t$referral_source)) %>% 
+  select(-referral_source) %>% as.matrix() %>% as.data.frame()
+
+sick_test <- sick_t %>% filter(!ind) %>% select(-ind)
+sick_t <- sick_t %>% filter(ind == 1) %>% select(-ind)
+
+#############################################
+
+```
+
+
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE, include=FALSE}
+
+sick_t$Class <- as.factor(sick_t$Class)
+  
+task <- makeClassifTask(data = sick_t, target = "Class")
+otask <- oversample(task, rate=5)
+
+rdesc <- makeResampleDesc("CV", iters=5)
+auprc.measure <- makeMeasure(id = "auprc",
+            name = "AUPRC",
+            properties = c('classif'),
+            minimize = FALSE,
+            best = 1,
+            worst = 0,
+            fun = function(task, model, pred, feats, extra.args) {
+              auprc(pred$data$prob.1, pred$data$truth, 1)
+            })
+
+
+
+classifiers <- c(
+  "classif.naiveBayes",
+  "classif.binomial",
+  "classif.rpart",
+  "classif.ctree",
+  "classif.C50",
+  "classif.boosting",
+  "classif.mlp",
+  "classif.ada",
+  "classif.gbm",
+  "classif.glmboost",
+  "classif.ranger",
+  "classif.cforest")
+
+models <- list()
+omodels <- list()
+
+for(classif in classifiers) {
+  
+  lr <- makeLearner(classif, predict.type = 'prob')
+  
+  m <- train(lr, task)
+  p <- predict(m, newdata=sick_test)
+  
+  om <- train(lr, otask)
+  op <- predict(om, newdata=sick_test)
+  
+  r <- suppressWarnings(resample(lr, task, rdesc, measures = list(auc, auprc.measure)))
+  or <- suppressWarnings(resample(lr, otask, rdesc, measures = list(auc, auprc.measure)))
+  
+  models[[classif]] <- list(r$measures.test, p)
+  omodels[[classif]] <- list(or$measures.test, op)
+}
+
+```
+
+# Comparison between prediction accuracy of interpretable and non-interpretable models
+
+I will compare five different interpretable models:
+
+- naive biases
+
+- logistic regression
+
+- basic tree
+
+- knn
+
+- ctree
+
+and back-box models:
+
+- C50
+
+- adabag boosting
+
+- mlp 
+
+- ada boost 
+
+- gradient boosting machine 
+
+- glm boost 
+
+- random forest 
+
+- cforest 
+
+
+## Interpretable models
+
+In this section we will examine prediction accuracy (via measuring AUC and AUPRC) of interpretable models. The following is not only a summary of the previous work, but an extension. Namely, due to imbalance of our classes, we performed oversampling, which generally has a capacity of increasing performance. 
+
+### Naive Bayes
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+kable(models$classif.naiveBayes[[1]])
+```
+
+With oversampling:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+kable(omodels$classif.naiveBayes[[1]])
+```
+
+Here we can see, that oversampling incresed AUPRC significantly. We must remember, that it doesn't mean that the model is that much better.
+
+### Logistic Regression
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+kable(models$classif.binomial[[1]])
+```
+
+With oversampling:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+kable(omodels$classif.binomial[[1]])
+```
+
+Again, oversampling gave better results.
+
+### Tree
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+kable(models$classif.rpart[[1]])
+```
+
+With oversampling:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+kable(omodels$classif.rpart[[1]])
+```
+
+Does the model changed? Let's see, this is a model without oversampling:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+rpart.plot(train(makeLearner("classif.rpart", predict.type = 'prob'), task)$learner.model)
+```
+
+and with oversampling:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+rpart.plot(train(makeLearner("classif.rpart", predict.type = 'prob'), otask)$learner.model)
+```
+
+Yes, it has changed. Oversampling then does change the model structure.
+
+### The KNN
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+knn <- makeLearner("classif.kknn", predict.type = 'prob')
+task_knn <- makeClassifTask(id="task_knn",data=sick_t %>% dplyr::select(log_TSH,
+                                                   sqrt_T3,
+                                                   sqrt_TT4,
+                                                   sqrt_FTI,
+                                                   Class,
+                                                   query_hypothyroid), target="Class")
+
+otask_knn <- oversample(task_knn, rate=5)
+
+m <- train(knn, task_knn)
+om <- train(knn, otask_knn)
+
+p <- predict(m, newdata=sick_test %>% dplyr::select(log_TSH,
+                                                   sqrt_T3,
+                                                   sqrt_TT4,
+                                                   sqrt_FTI,
+                                                   Class,
+                                                   query_hypothyroid))
+op <- predict(om, newdata=sick_test %>% dplyr::select(log_TSH,
+                                                   sqrt_T3,
+                                                   sqrt_TT4,
+                                                   sqrt_FTI,
+                                                   Class,
+                                                   query_hypothyroid))
+
+r <- suppressMessages(resample(knn, task_knn, rdesc, measures = list(auc, auprc.measure)))
+or <- suppressMessages(resample(knn, otask_knn, rdesc, measures = list(auc, auprc.measure)))
+
+models[["classif.kknn"]] <- list(r$measures.test, p)
+omodels[["classif.kknn"]] <- list(or$measures.test, op)
+
+kable(models$classif.kknn[[1]])
+```
+
+With oversampling:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+kable(omodels$classif.kknn[[1]])
+```
+
+The KNN works on a small subset of variables and it achieves very good results. 
+
+### C-Tree
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE, fig.width=15, fig.height=15}
+kable(models$classif.ctree[[1]])
+```
+
+With oversampling:
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE, fig.width=15, fig.height=15}
+kable(omodels$classif.ctree[[1]])
+```
+
+It has very good results, but it's questionable if it's better than KNN. We would say, that it's not.
+
+## Black-box Models
+
+In this section I will examine the performance of back-box models.
+
+### C50
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(models$classif.C50[[1]])
+```
+
+With oversampling:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(omodels$classif.C50[[1]])
+```
+
+C50 shows comparable improvement with best interpretable classifiers.
+
+### Adabag Boosting
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(models$classif.boosting[[1]])
+```
+
+With oversampling:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(omodels$classif.boosting[[1]])
+```
+
+Adabag has the best results so far. It even maxed out auc in oversampling, which will not be achieved by other classifiers. 
+
+### Ada Boost 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(models$classif.ada[[1]])
+```
+
+With oversampling:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(omodels$classif.ada[[1]])
+```
+
+Ada boost performed very well, scoring quite steady 0.95. It's not better than Adabag model, but it indicates that Ada/Adabag might be the way to go.
+
+### Gradient Boosting Machine 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(models$classif.gbm[[1]])
+```
+
+With oversampling:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(omodels$classif.gbm[[1]])
+```
+
+Gradient Boosting Machine achieved very low scores, which is kind of surprise, it generally does well.
+
+### GLM Boost 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(models$classif.glmboost[[1]])
+```
+
+With oversampling:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(omodels$classif.glmboost[[1]])
+```
+
+GLM boost didn't performed well.
+
+### Random Forest 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(models$classif.ranger[[1]])
+```
+
+With oversampling:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(omodels$classif.ranger[[1]])
+```
+
+Random forest shows steady high auprc. It's an indicator of a good model.
+
+### Cforest 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(models$classif.cforest[[1]])
+```
+
+With oversampling:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+kable(omodels$classif.cforest[[1]])
+```
+
+It performed good, but not as good as other classifiers.
+
+# Conclusions
+
+Ada boost/Adabag boost performed best. Here's comparison of the performance of all classifiers on the test data set:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+m <- as.data.frame(as.matrix(sort(sapply(models, function(tup) auprc(tup[[2]]$data[,3], tup[[2]]$data$truth, 1)))))
+om <- as.data.frame(as.matrix(sort(sapply(omodels, function(tup) auprc(tup[[2]]$data[,3], tup[[2]]$data$truth, 1)))))
+colnames(m) <- "auprc"
+colnames(om) <- "auprc oversampled"
+kable(cbind(m, om))
+
+```
+
+As we can see, Adabag boosting classifier achieved the best results, along with C50 and Ada. C-forest performed particularly bad, the opposite of what we predicted, while C50 turned out to work fine on a test sample. There can be seen a trend, that generally interpretable models perform worse than their back-box competitors, it's not a rule though.
+
+The important thing about oversampling is that it did't change performance of the models. There is a bit of change in auprc in C50, however it just as well might be a statistical error.
+
+
+
+
+
+
