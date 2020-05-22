@@ -1,0 +1,326 @@
+---
+title: "PD2"
+author: "Dominik Rafacz"
+date: "28.04.2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = TRUE,
+                      fig.width = 10,
+                      fig.height = 7,
+                      fig.align = "center")
+library(kableExtra)
+
+library(dplyr)
+library(ggplot2)
+library(readr)
+
+library(mlr3)
+library(mlr3learners)
+library(mlr3pipelines)
+library(mlr3tuning)
+
+library(paradox)
+library(mice)
+library(auprc)
+```
+
+```{r data, include = FALSE}
+dat_raw <- read_csv("data/dat_all.csv")
+indices_train <- read_delim("data/trainind.csv", 
+                            col_names = c("new_ind", "orig_ind"), 
+                            delim = " ", skip = 1)$orig_ind
+indices_test <- setdiff(1:nrow(dat_raw), indices_train)
+```
+
+# Preprocessing
+
+First, I prepared data analogously like in the first homework with one difference -- I decided to keep `referral_source` column. However, I used one-hot-encoding on it. 
+
+```{r preprocessing, include = FALSE}
+dat <- dat_raw %>% 
+  select(-TBG,              # drop 'TBG' - it is an empty column:
+         -TBG_measured,     # same here
+         -hypopituitary     # empty in training set 
+         ) %>%
+  mutate(sex = ifelse(is.na(sex) & pregnant, "M", sex),          # obvious...
+         is_male = ifelse(is.na(sex) | sex == "M", TRUE, FALSE), # to remove NA
+         is_sex_specified = ifelse(!is.na(sex), TRUE, FALSE),    # to keep track of NA
+         T4U_FTI_measured = FTI_measured,                        # very big correlation
+         sick = as.factor(Class),                                # for convenience
+         source_STMW = referral_source == "STMW",                # one hot encoding
+         source_SVCH = referral_source == "SVHC",
+         source_SVHD = referral_source == "SVHD",
+         source_SVI = referral_source == "SVI",
+         source_other = referral_source == "other") %>%
+  select(-FTI_measured,     # remove unnecessary classes
+         -T4U_measured,
+         -Class,
+         -sex,
+         -referral_source)
+```
+
+# Basic model
+
+Then I trained basic xgboost model.
+
+```{r train_xgboost}
+task_basic <- TaskClassif$new("sick", dat[indices_train, ], "sick", "sick")
+
+set.seed(1998)
+learner_xgboost <- lrn("classif.xgboost")
+learner_xgboost$predict_type = "prob"
+
+resampling_outer <- rsmp("cv", folds = 5)
+measures <- list(msr("classif.auc"), msr("classif.auprc"))
+```
+
+```{r res1, eval=FALSE, include=TRUE}
+result <- resample(task = task_basic, 
+                   learner = learner_xgboost, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print1, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9557524, classif.auprc = 0.8756120)) %>%
+  kable_styling(position = "center")
+```
+
+As we can see, it achieved relatively good result in terms of both AUC and AUPRC. I decided to train another xgboost model, this time setting up some hyperparameters values suggested for imbalanced datasets.
+
+```{r train_xgboost_suggested}
+set.seed(1998)
+learner_xgboost_suggested <- lrn("classif.xgboost", 
+                                 min_child_weight = 1,
+                                 scale_pos_weight = 1,
+                                 max_delta_step = 5,
+                                 gamma = 0.1)
+learner_xgboost_suggested$predict_type = "prob"
+```
+
+```{r res2, eval=FALSE, include=TRUE}
+result <- resample(task = task_basic, 
+                   learner = learner_xgboost_suggested, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print2, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9557524, classif.auprc = 0.8756120)) %>%
+  kable_styling(position = "center")
+```
+
+In this case there was no gain in performance.
+
+# Data transformation
+
+Next, I applied some data transformation -- summarized information on how many measurements were made.
+
+```{r train_transformation}
+dat_transformed <- dat %>%
+  mutate(measurements = T4U_FTI_measured + TT4_measured + T3_measured + TSH_measured) %>%
+  select(-ends_with("measured"))
+
+task_transformed <- TaskClassif$new("sick", dat_transformed[indices_train, ], "sick", "sick")
+```
+
+```{r res3, eval=FALSE, include=TRUE}
+result <- resample(task = task_transformed, 
+                   learner = learner_xgboost, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print3, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9677598, classif.auprc = 0.8688420)) %>%
+  kable_styling(position = "center")
+```
+
+Despite the fact that AUPRC dropped in value insignificantly, AUC rose by above one percent point, so I decided to keep this transformation.
+
+# Data imputation
+
+The next step was imputing missing values. As previously -- I tried imputation by histogram and using MICE algorithm.
+
+```{r train_imputation_hist}
+po_imp_hist <- po("imputehist")
+task_imp_hist <- po_imp_hist$train(list(task_transformed))[[1]]
+```
+
+```{r res4, eval=FALSE, include=TRUE}
+result <- resample(task = task_imp_hist, 
+                   learner = learner_xgboost, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print4, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9604067, classif.auprc = 0.8669830)) %>%
+  kable_styling(position = "center")
+```
+
+```{r train_imputation_mice, eval = FALSE}
+task_imp_mice <- TaskClassif$new("sick", 
+                        cbind(
+                          complete(
+                            mice(
+                              dat_transformed[indices_train, -21])), 
+                          dat_transformed[indices_train, "sick"]), 
+                        "sick", "sick")
+
+set.seed(1998)
+```
+
+```{r res5, eval=FALSE, include=TRUE}
+result <- resample(task = task_imp_mice, 
+                   learner = learner_xgboost, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print5, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9581645, classif.auprc = 0.8841467)) %>%
+  kable_styling(position = "center")
+```
+
+In the first case neither one of measures gained on value, but in the second case there was improvement in AUPRC, but drop in AUC. Not sure if to keep this step I tried using another learners.
+
+```{r train_bayes_hist}
+learner_bayes <- lrn("classif.naive_bayes")
+learner_bayes$predict_type = "prob"
+```
+
+```{r res6, eval=FALSE, include=TRUE}
+result <- resample(task = task_imp_hist, 
+                   learner = learner_bayes, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print6, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.8991092, classif.auprc = 0.6037792)) %>%
+  kable_styling(position = "center")
+```
+
+Naive Bayes performed very poorly as long as AUPRC is concerned so I moved on to ranger.
+
+```{r train_ranger_mice}
+learner_ranger <- lrn("classif.ranger")
+learner_ranger$predict_type = "prob"
+```
+
+```{r res7, eval=FALSE, include=TRUE}
+result <- resample(task = task_imp_mice, 
+                   learner = learner_ranger, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print7, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9931347, classif.auprc = 0.9069761)) %>%
+  kable_styling(position = "center")
+```
+
+```{r res8, eval=FALSE, include=TRUE}
+result <- resample(task = task_imp_hist, 
+                   learner = learner_ranger, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print8, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9937949, classif.auprc = 0.9121587)) %>%
+  kable_styling(position = "center")
+```
+
+It turned out that ranger performance is way better than xgboost. I kept using it with histogram imputation.
+
+# Oversampling
+
+The last step in exploring the ocean of possibilities of model improvement was in my case using oversampling. As in the previous homework, I used SMOTE algorithm.
+
+```{r train_oversampling}
+dat_numerized <- dat_transformed %>%
+  mutate_all(as.numeric) %>%
+  mutate(sick = dat_transformed$sick)
+
+task_numerized <- TaskClassif$new("sick", dat_numerized[indices_train, ], "sick", "sick")
+
+task_numerized <- po_imp_hist$train(list(task_numerized))[[1]]
+
+po_smote <- po("smote", dup_size = 2)   # create twice as much positive class observations
+task_numerized <- po_smote$train(list(task_numerized))[[1]]
+```
+
+```{r res9, eval=FALSE, include=TRUE}
+result <- resample(task = task_numerized, 
+                   learner = learner_ranger, 
+                   resampling = resampling_outer)
+result$aggregate(measures)
+```
+
+```{r print9, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9984646, classif.auprc = 0.9850904)) %>%
+  kable_styling(position = "center")
+```
+
+AUPRC with artificial data generation jumped almost to 100%. However, having the experience form the previous homework in mind, I was very cautious with the optimism, because of the fact that up until nowe I was measuring performance using crossvalidation and in this case, when generating artificial data, it can be not very relevant result.
+
+# Final results
+
+Finally, I used ranger trained on data imputed with histogram with some minor data transformation. I checked two configurations on the test data -- with and without data imputation.
+
+```{r test}
+enr_test_size <- nrow(task_numerized$data())
+
+# append test set
+task_numerized$rbind(dat_numerized[indices_test, ])
+
+task_numerized <- po("imputehist")$train(list(task_numerized))[[1]]
+
+learner_ranger$train(task_numerized, 
+                     row_ids = 1:enr_test_size)
+```
+
+```{r res10, eval=FALSE, include=TRUE}
+prediction <- learner_ranger$predict(
+  task_numerized, 
+  row_ids = (enr_test_size + 1):nrow(task_numerized$data()))
+result$aggregate(measures)
+```
+
+```{r print10, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9910872, classif.auprc = 0.8652895)) %>%
+  kable_styling(position = "center")
+```
+
+```{r test2}
+# append test set
+task_imp_hist$rbind(dat_numerized[indices_test, ])
+
+task_imp_hist <- po("imputehist")$train(list(task_imp_hist))[[1]]
+
+learner_ranger$train(task_imp_hist, 
+                     row_ids = 1:length(indices_train))
+```
+
+```{r res11, eval=FALSE, include=TRUE}
+prediction <- learner_ranger$predict(
+  task_imp_hist, 
+  row_ids = (length(indices_train) + 1):nrow(task_imp_hist$data()))
+result$aggregate(measures)
+```
+
+```{r print11, echo=FALSE}
+knitr::kable(cbind(classif.auc = 0.9930679, classif.auprc = 0.8963976)) %>%
+  kable_styling(position = "center")
+```
+
+Accordingly to my expectations, model without data imputation performed better. My final result is AUPRC = 0.8963976.
+
+# Comparison to whitebox
+
+As we can see, the result is significantly higher. Using only whitebox model (rpart) I was able to achieve AUPRC = 0.7687503
