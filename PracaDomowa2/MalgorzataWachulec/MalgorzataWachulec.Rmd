@@ -1,0 +1,211 @@
+---
+title: "Sick dataset analysis 2"
+author: "Malgorzata Wachulec"
+date: "29 04 2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(mice)
+library(mlr3)
+library(auprc)
+library(mlr3learners)
+library(caret)
+library(data.table)
+library(mltools)
+```
+
+
+```{r data, include = FALSE}
+
+set.seed(10)
+
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+```
+
+```{r plot, warning=F, include=FALSE}
+
+DataExplorer::plot_histogram(dataset_raw)
+
+DataExplorer::plot_bar(dataset_raw)
+
+```
+
+# Preprocessing
+
+Some factor columns do not have sufficient number of observations in each of the levels. That means some sets will have observations with only one feature value. These variables will not be useful when training the model and might cause errors. For this reason I am deleting columns 'TBG', 'hypopituitary' and 'TBG_measured'. I have also decided to set limits to hormones, but this will be done after dividing the data into train, validation and test sets.
+
+```{r preprocessing, include = FALSE}
+
+dataset <- dataset_raw %>% 
+  # drop 'TBG' - it is an empty column:
+  select(-TBG) %>%
+  # drop 'hypopituitary' - only one observiation has an answer true to that
+  select(-hypopituitary) %>%
+  # drop 'TBG_measured' - all values have level false
+  select(-TBG_measured)
+
+# Exchanging age from 455 to 45 for one observation
+dataset[which(dataset$age==455),1] <- 45
+dataset[is.na(dataset$sex) & dataset$pregnant == "t", ]$sex <- "F"
+
+## For other models 
+# dataset$Class <- as.numeric(dataset$Class) - 1
+```
+
+After these columns are deleted, we can now look at the missing values. Since in every column there is less than 10% of missing data, I will imput it as opposed to deleting the entire column or observation for which the column is empty.
+
+```{r missings, echo=FALSE}
+
+gg_miss_var(dataset, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+```
+
+As I am planning use the mice package to imput missing data, which is predicting the missing values through model built on other observations, I will first divide data into training, validation and test sets. This will prevent for training set to have values inputed based on observations from test set and vice versa.
+
+```{r train_test}
+# dividing data into train and test
+training_indicies <- read.table("indeksy_treningowe.txt")
+training_indicies <- training_indicies$x
+trainset_to_be_divided <- dataset[ training_indicies,]
+testset <-  dataset[-training_indicies,]
+
+# dividing training set into 75% training set and 25% valdation set
+# each set has the same distribution of the target class
+set.seed(3456)
+trainIndex <- createDataPartition(trainset_to_be_divided$Class, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+trainset <- trainset_to_be_divided[ trainIndex,]
+validset <- trainset_to_be_divided[-trainIndex,]
+
+# Limiting hormone levels
+preprocess <- function(dataset) {
+  dataset <- data.table(dataset)
+  dataset <- dataset[TSH < 100 & T3 < 30 & TT4 < 400 & FTI < 400]
+  dataset <- data.frame(dataset)
+  ## For other models
+  #dataset <- as.data.frame(one_hot(as.data.table(dataset), cols = "referral_source"))
+  #for(i in 1:(ncol(dataset))) {
+  #  if(is.factor(dataset[, i])) {
+  #    dataset[, i] = as.numeric(dataset[, i])
+  #  }
+  #}
+  dataset
+}
+
+trainset <- preprocess(trainset)
+validset <- preprocess(validset)
+testset <- preprocess(testset)
+```
+
+Imputation of missing values using mice() function from mice package. As to make sure, that the model for imputing missing values will not use target variable, it is taken away before imputing and added again to the training, validation and test set after the imputing process.
+
+```{r imput_missing, include=FALSE}
+# Imputing data separately on all of the set
+last_idx <- ncol(trainset)
+imputed_data_train <- mice(trainset[,-last_idx],m=1,maxit = 50, seed=123)
+complete_trainset <- cbind(complete(imputed_data_train),trainset[,last_idx])
+
+imputed_data_valid <- mice(validset[,-last_idx],m=1,maxit = 50, seed=123)
+complete_validset <- cbind(complete(imputed_data_valid),validset[,last_idx])
+
+imputed_data_test <- mice(testset[,-last_idx],m=1,maxit = 50, seed=123)
+complete_testset <- cbind(complete(imputed_data_test),testset[,last_idx])
+
+# Changing target variable name back to "Class"
+colnames(complete_trainset)[last_idx] <- "Class"
+colnames(complete_validset)[last_idx] <- "Class"
+colnames(complete_testset)[last_idx] <- "Class"
+```
+
+# Building black box model
+
+Here I am defining training, validation and test tasks, as well as the learner. Then I am checking it's performance on the validation set.
+
+```{r model, warning=FALSE}
+# task and learner definition
+complete_trainset$Class <- as.factor(complete_trainset$Class)
+complete_validset$Class <- as.factor(complete_validset$Class)
+complete_testset$Class <- as.factor(complete_testset$Class)
+pos <- 'sick' # '1' for other models
+trainTask <- TaskClassif$new(id = "train sick", backend = complete_trainset, 
+                             target = "Class", positive = pos)
+validTask <- TaskClassif$new(id = "valid sick", backend = complete_validset, 
+                             target = "Class", positive = pos)
+testTask <- TaskClassif$new(id = "test sick", backend = complete_testset, 
+                            target = "Class",positive = pos)
+
+learner <- lrn("classif.ranger")
+## Other models
+# learner <- lrn("classif.xgboost")
+# learner <- lrn("classif.svm")
+
+learner$predict_type <- "prob"
+
+# model and prediction
+learner$train(trainTask)
+result <- learner$predict(validTask)
+cat("Contigency table: \n")
+result$confusion
+```
+
+Let's check recall and other measures of this prediction.
+
+```{r measures_1, echo=FALSE}
+auc = msr("classif.auc")
+auprc = msr("classif.auprc")
+recall = msr("classif.recall")
+specificity = msr("classif.specificity")
+
+# measures on validation set
+cat("Auc on validation set: ",result$score(auc),"\n") 
+cat("Auprc on validation set: ",result$score(auprc),"\n")
+cat("Recall on validation set: ",result$score(recall),"\n") 
+cat("Specificity on validation set: ",result$score(specificity),"\n") 
+```
+
+# Trying other models
+
+I have also tried xgboost model from the mlr3 package that required changing factor variables to one-hot-encoding and the result obtained on the validation set was: auc measure equal to 0.93 and auprc equal to 0.85. Another model that I tried was SVM model from mlr3 package which gave even worse results on the validation set - only 0.74 of accuracy and very low auprc measure.
+
+At the end I have again run ranger model on the model with the one-hot-encoding, and, to my surprise (I thought it would be at least as good as the one with regular values), it performed worse that the one shown in the previous section - results on validation set were: acc equal to 0.98 and auprc equal to 0.86. This is why the final model is ranger without one-hot-encoding which gives auprc equal to nearly 0.91 on validation set. Let's check how it will perform on the testset.
+
+# Final score on testset
+
+These are the results obtained on the test set using the final version of the model.
+
+```{r model_improvement_3, warning=FALSE, echo=FALSE}
+final_result <- learner$predict(testTask)
+cat("Contigency table: \n")
+print(final_result$confusion)
+
+# measures
+cat("\n\nAuc on test set: ",final_result$score(auc),"\n") 
+cat("Auprc on test set: ",final_result$score(auprc),"\n")
+cat("Recall on test set: ",final_result$score(recall),"\n") 
+cat("Specificity on test set: ",final_result$score(specificity),"\n") 
+```
+

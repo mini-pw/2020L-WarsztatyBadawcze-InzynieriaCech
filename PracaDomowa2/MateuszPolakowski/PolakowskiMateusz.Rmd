@@ -1,0 +1,168 @@
+---
+title: "Sick dataset analysis 2"
+author: "Mateusz Polakowski"
+date: "26 04 2020"
+output: pdf_document
+---
+  
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(Hmisc)
+library(mlr3)
+library(mlr3tuning)
+library(mlr3learners)
+library(auprc)
+library(paradox)
+library(h2o)
+```
+
+# Introduction & assignment 1. catch-up
+
+Here I provide some bacis data engineering, based mainly on features reduction, which explicitly had an impact on previous results (only so-called white boxes). I deliberately omit EDA chapter, as it was a part of a previous assignment.
+
+```{r data, include = FALSE, echo = FALSE}
+set.seed(10)
+list_all_openml_dataset <- listOMLDataSets()
+openml_id <- 38
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+```
+
+```{r preprocessing, include = FALSE, echo = FALSE}
+dataset <- dataset_raw %>% 
+    select(-TBG) %>% ### Empty column
+    mutate(age=replace(age, age>110 | age<0, NA)) %>% 
+    drop_na() %>% 
+    select(-c("TBG_measured", "FTI_measured", "T4U_measured", "TT4_measured", "T3_measured", "TSH_measured")) ### Variance doesn't change
+```
+
+```{r message=FALSE, warning = FALSE, results = FALSE, cache = FALSE, echo = FALSE}
+### Creating proper indices
+train_idx <- read.table("indeksy_treningowe.txt", sep=" ", header = TRUE)$x
+test_idx <- setdiff(1:3772, train_idx)
+train <- dataset[train_idx,] %>% drop_na()
+test <- dataset[test_idx,] %>% drop_na()
+
+### mlr3 modelling pipeline
+measure_auc = msr('classif.auc')
+measure = msr("classif.auprc")
+task = TaskClassif$new(id = "classif_task",
+                       backend = train,
+                       target = "Class",
+                       positive = 'sick')
+resampling = rsmp("cv", folds = 5)
+r = resampling$instantiate(task)
+
+learner_rpart = lrn('classif.rpart', predict_sets = c("train", "test"), predict_type = 'prob')
+tune_ps = ParamSet$new(list(
+    ParamDbl$new("cp", lower = 0.001, upper = 0.1),
+    ParamInt$new("minsplit", lower = 16, upper = 64),
+    ParamInt$new("maxdepth", lower = 7, upper = 30)
+))
+
+evals50 = term("evals", n_evals = 50)
+instance = TuningInstance$new(
+    task = task,
+    learner = learner_rpart,
+    resampling = resampling,
+    measures = measure,
+    param_set = tune_ps,
+    terminator = evals50
+)
+
+tuner = tnr('random_search')
+tuner$tune(instance)
+
+learner_rpart$param_set$values <- instance$result$params
+learner_rpart$train(task)
+
+### Predictions & measures calculating
+pred_train <- learner_rpart$predict(task)
+pred_test <- learner_rpart$predict_newdata(task, newdata = test)
+auprc_train <- pred_train$score(measure)
+auprc_test <- pred_test$score(measure)
+auc_train <- pred_train$score(measure_auc)
+auc_test <- pred_test$score(measure_auc)
+```
+
+
+```{r catch_up_results, echo = FALSE}
+results <- data.frame(
+    'auc.train' = auc_train,
+    'auc.test' = auc_test,
+    'auprc.train' = auprc_train,
+    'auprc.test'= auprc_test, 
+    row.names = c('rpart_tuned')
+)
+
+kable(results) %>% 
+    kable_styling(latex_options = "hold_position")
+```
+
+# Black-boxes modelling
+
+Below I tried to use h2o automl functionality to find the best model in black-boxes family. Results present as:
+
+```{r message=FALSE, warning = FALSE, results = FALSE, cache = FALSE, echo = FALSE}
+### Additional dataset factor removing
+for (i in 1:ncol(dataset)) {
+    if (!is.null(levels(dataset[[i]]))) {
+        if (all(levels(dataset[[i]]) %in% c("f", "t"))) {
+            dataset[i] <- as.numeric(ifelse(dataset[i] == 't', 1, 0))
+        }
+    }
+}
+dataset$sex <- ifelse(dataset$sex == "M", 1, 0)
+dataset$referral_source <- if_else(dataset$referral_source == 'SVHC', 0,
+                                  if_else(dataset$referral_source == 'SVI', 1,
+                                          if_else(dataset$referral_source == 'other', 2,
+                                                  if_else(dataset$referral_source == 'SVHD', 3, 4))))
+
+
+h2o.init()
+
+train_idx <- read.table("indeksy_treningowe.txt", sep=" ", header = TRUE)$x
+test_idx <- setdiff(1:3772, train_idx)
+train <- as.h2o(dataset[train_idx,] %>% drop_na())
+test <- as.h2o(dataset[test_idx,] %>% drop_na())
+
+y <- 'Class'
+x <- setdiff(names(dataset), c(y))
+am_sick <- h2o.automl(x = x, y = y,
+                      training_frame = train,
+                      validation_frame = test,
+                      max_models = 1000,
+                      sort_metric = 'AUCPR',
+                      exclude_algos = c('DeepLearning'),
+                      seed = 1910) ### Default nfolds is set to 5
+
+leader <- am_sick@leader
+auprc_train <- h2o.aucpr(leader, valid = FALSE)
+auprc_test <- h2o.aucpr(leader, valid = TRUE)
+auc_train <- h2o.auc(leader, valid = FALSE)
+auc_test <- h2o.auc(leader, valid = TRUE)
+```
+
+```{r black_box results, echo = FALSE}
+results <- data.frame(
+    'auc.train' = auc_train,
+    'auc.test' = auc_test,
+    'auprc.train' = auprc_train,
+    'auprc.test'= auprc_test, 
+    row.names = c('rpart_tuned')
+)
+
+kable(results) %>% 
+    kable_styling(latex_options = "hold_position")
+```
+
+
