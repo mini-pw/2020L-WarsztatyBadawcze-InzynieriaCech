@@ -1,0 +1,296 @@
+---
+title: "Sick dataset analysis"
+author: "Adam Rydelek"
+date: "16 04 2020"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(dplyr)
+library(corrplot)
+library(rpart)
+library(auprc)
+library(mice)
+library(VIM)
+
+```
+
+
+```{r data, include = FALSE}
+
+set.seed(10)
+
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+
+```
+
+# Data distribution
+
+```{r plot, warning=F}
+
+DataExplorer::plot_histogram(dataset_raw)
+
+DataExplorer::plot_bar(dataset_raw)
+
+```
+
+# Correlation
+
+```{r}
+data_num <- na.omit(select(dataset_raw, c(age,FTI,T3,T4U,TSH,TT4)))
+correlation <- cor(data_num)
+corrplot::corrplot(correlation)
+```
+
+# Missing Values
+
+```{r message=FALSE, warning=FALSE, results=FALSE, fig.show=TRUE}
+
+library(mice)
+library(VIM)
+
+na_plot <- aggr(dataset_raw, col=c('blue','red'),
+                    numbers=TRUE, sortVars=TRUE,
+                    labels=names(dataset_raw), cex.axis=.6,
+                    gap=0.5, ylab=c("Missing data","Pattern"))
+
+gg_miss_var(dataset_raw, 
+            show_pct = TRUE) + 
+  ylim(0, 100) +
+  labs(title = "Missing dataset",
+       x = "Features",
+       y = "Percent of missings")
+
+```
+
+# Preprocessing
+
+```{r results=FALSE, warning=FALSE}
+data <- dataset_raw
+data[1365,]$age <- 45
+data[is.na(data$sex),]$sex <- sample(c("F","M"), replace=TRUE, size = length(data[is.na(data$sex),]$sex))
+data[data$sex=="M"& data$pregnant=="t",]$sex <- "F"
+data <- select(data, -c(TBG,hypopituitary))
+
+imputed_data <- mice(data, m=3, maxit = 100, method = 'pmm', seed = 554)
+imp_data1 <- complete(imputed_data,2)
+soft_data1 <- imp_data1
+soft_data1$TSH  <- log(soft_data1$TSH )
+soft_data1$Class <- ifelse(soft_data1$Class=="sick",1,0)
+soft_data2 <- select(soft_data1, -c(TSH_measured, T3_measured, TT4_measured, T4U_measured, FTI_measured, TBG_measured, lithium, goitre))
+DataExplorer::plot_histogram(soft_data2)
+```
+
+# Model on stock data vs preprocessing
+
+```{r, cache=TRUE}
+ind <- read.table("indeksy_treningowe.txt")
+train_raw <- dataset_raw[ind[,1],]
+test_raw <- dataset_raw[-ind[,1],]
+
+train_proc <- soft_data2[ind[,1],]
+test_proc <- soft_data2[-ind[,1],]
+
+cv5 <- function(data, factor=TRUE, tuning=FALSE,...){
+  yourData<-data[sample(nrow(data)),]
+  folds <- cut(seq(1,nrow(yourData)),breaks=5,labels=FALSE)
+  auprcVect <- c()
+  for(i in 1:5){
+    testIndexes <- which(folds==i,arr.ind=TRUE)
+    testData <- yourData[testIndexes, ]
+    trainData <- yourData[-testIndexes, ]
+    if(tuning==FALSE){
+      tree <- rpart::rpart(Class ~ ., data=trainData)
+    }
+    else{
+       tree <- rpart::rpart(Class ~ ., data=trainData, method = "anova", minsplit = minsp, minbucket = minb, cp = cps)
+    }
+    pred <- predict(tree, testData)
+    if(factor==TRUE){
+      auprcVect <- c(auprcVect,auprc(pred[,2], testData$Class, "sick"))
+    }
+    else{
+      auprcVect <- c(auprcVect,auprc(pred, testData$Class, 1))
+    }
+  }
+  return(auprcVect)
+}
+
+raw_auprc <- cv5(train_raw, factor=TRUE)
+processed_auprc <- cv5(train_proc, factor=FALSE)
+
+df_cv <- data.frame("Fold-1" = c(raw_auprc[1],processed_auprc[1]), "Fold-2" = c(raw_auprc[2],processed_auprc[2]), "Fold-3" = c(raw_auprc[3],processed_auprc[3]), "Fold-4" = c(raw_auprc[4],processed_auprc[4]), "Fold-5" = c(raw_auprc[5],processed_auprc[5]), "Mean" = c(mean(raw_auprc),mean(processed_auprc)))
+rownames(df_cv) <- c("Raw","Processed")
+knitr::kable(df_cv, "markdown")
+```
+
+# Parameter tuning
+
+```{r eval = FALSE, echo=TRUE}
+Vminsp <- c()
+Vminb <- c()
+Vcps <- c()
+Vauprc <- c()
+for(i in 1:10000){
+  minsp <- sample(1:25,1)
+  minb <- sample(5:15,1)
+  cps <- runif(n = 1, min = 0.00001, max = 0.0005)
+  auprc_soft_test <- mean(cv5(train_proc, FALSE, TRUE, minsp = minsp, minb = minb, cps = cps))
+  #tree_soft_test <- rpart::rpart(Class ~ ., data=train_soft2, method = "anova", minsplit = minsp, minbucket = minb, cp = cps)
+  #pred_soft_test <- predict(tree_soft_test, test_soft2)
+  #auprc_soft_test <- auprc(pred_soft_test, test_soft2$Class, 1)
+  Vminsp <- c(Vminsp, minsp)
+  Vminb <- c(Vminb, minb)
+  Vcps <- c(Vcps, cps)
+  Vauprc <- c(Vauprc, auprc_soft_test)
+}
+df <- data.frame("Minsplit"=Vminsp, "Minbucket" = Vminb, "CP" = Vcps, "Auprc" = Vauprc)
+```
+
+# Results
+
+```{r}
+# Stock parameters, raw data
+tree_raw <- rpart::rpart(Class ~ ., data=train_raw)
+pred_raw <- predict(tree_raw, test_raw)
+
+auprc_raw <- auprc(pred_raw[,2], test_raw$Class, "sick")
+
+
+# Stock parameters, processed data
+tree_soft <- rpart::rpart(Class ~ ., data=train_proc)
+pred_soft <- predict(tree_soft, test_proc)
+
+auprc_soft <- auprc(pred_soft, test_proc$Class, 1)
+
+# Tuned, processed data
+tree_soft_tuned <- rpart::rpart(Class ~ ., data=train_proc, method = "anova", minsplit = 2, minbucket = 9, cp = 0.0001361579)
+pred_soft_tuned <- predict(tree_soft_tuned, test_proc)
+
+auprc_soft_tuned <- auprc(pred_soft_tuned, test_proc$Class, 1)
+```
+
+```{r echo=FALSE}
+df_res <- data.frame("Stock-raw" = auprc_raw, "Stock-processed" = auprc_soft, "Tuned-processed" = auprc_soft_tuned)
+
+knitr::kable(df_res, "markdown")
+```
+
+# Plots
+
+## Stock parameters, raw data
+
+```{r}
+auprc::precision_recall_curve(pred_raw[,2], test_raw$Class, "sick")
+```
+
+## Tuned, processed data
+```{r}
+auprc::precision_recall_curve(pred_soft_tuned, test_proc$Class, 1)
+```
+
+# Black-box model
+
+The next part of the analysis will be testing the black box model. We will see whether we will be able to get better results. The model used will be found using Auto ML from h2o package.
+
+## On stock data
+
+```{r}
+train_raw$Class <- ifelse(train_raw$Class=="sick",1,0)
+test_raw$Class <- ifelse(test_raw$Class=="sick",1,0)
+train_raw$Class <- as.factor(train_raw$Class)
+test_raw$Class <- as.factor(test_raw$Class)
+```
+
+```{r message=FALSE, results="hide"}
+library(h2o)
+h2o.init()
+h2o.no_progress()
+train_h2o <- as.h2o(train_raw)
+automl <- h2o.automl(y = "Class", training_frame = train_h2o, balance_classes = TRUE,
+                     max_models = 5, stopping_metric = "AUCPR", sort_metric = "AUCPR", seed=10)
+best_model <- automl@leader
+
+train_auprc <- h2o.aucpr(best_model)
+
+res <- unlist(as.data.frame(predict(best_model, as.h2o(test_raw))[,3]))
+test_auprc <- auprc(res, test_raw$Class, "1")
+```
+
+### AUPRC results
+
+```{r echo=FALSE}
+df_res3 <- data.frame("Best-rpart-train" = mean(processed_auprc), "Stock-blackbox-train" = train_auprc)
+knitr::kable(df_res3, "markdown")
+df_res2 <- data.frame("Best-rpart-test" = auprc_soft_tuned, "Stock-blackbox-test" = test_auprc)
+knitr::kable(df_res2, "markdown")
+```
+
+We can clearly see that the found black-box model on raw data is better than the best, tuned rpart, interpretable model made on processed data.
+
+### AUPRC plot
+
+```{r}
+auprc::precision_recall_curve(res, test_raw$Class, 1)
+```
+
+
+## On processed data
+
+
+```{r message=FALSE, eval=FALSE}
+h2o.init()
+h2o.no_progress()
+automl <- h2o.automl(y = "Class", training_frame = as.h2o(train_proc), balance_classes = TRUE,
+                     max_models = 5, stopping_metric = "AUCPR", sort_metric = "AUCPR", seed=10)
+best_model <- automl@leader
+
+train_auprc <- h2o.aucpr(best_model)
+
+res <- unlist(as.data.frame(predict(best_model, as.h2o(test_proc))[,3]))
+test_auprc <- auprc(res, test_proc$Class, "1")
+```
+
+### AUPRC results
+
+```{r echo=FALSE}
+df_res3 <- data.frame("Best-rpart-train" = mean(processed_auprc), "Proc-blackbox-train" = train_auprc)
+knitr::kable(df_res3, "markdown")
+df_res2 <- data.frame("Best-rpart-test" = auprc_soft_tuned, "Proc-blackbox-test" = test_auprc)
+knitr::kable(df_res2, "markdown")
+```
+
+Surprisingly the black-box found on processed data by h2o is worse than the one on stock data.
+
+# Best model
+
+The best overall model appeared to be the black box found using h2o Auto ML. It's results were as following:
+
+```{r echo=FALSE}
+df_res4 <- data.frame("Best-model-train" = mean(train_auprc), "Best-model-test" = test_auprc)
+rownames(df_res4) <- c("AUPRC")
+knitr::kable(df_res4, "markdown")
+```
+
+#### Formal part
+
+Potwierdzam samodzielność powyższej pracy oraz niekorzystanie przeze mnie z niedozwolonych źródeł.
+Adam Rydelek

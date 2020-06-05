@@ -1,0 +1,219 @@
+---
+title: "Sick dataset analysis"
+author: "Tomasz Makowski"
+date: "29 04 2020"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(farff)
+library(DataExplorer)
+library(caret)
+library(mlr)
+library(mlr3)
+library(mlr3learners)
+library(auprc)
+library(mice)
+library(kknn)
+library(reshape2)
+library(ggplot2)
+
+```
+
+# Introduction
+
+```{r data, include = FALSE}
+
+set.seed(10)
+
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+
+```
+
+The object of this analyse is to predict if person is sick or not. First, we can see the basic introduction of dataset.
+
+```{r plot, warning=F}
+introduce(data = dataset_raw)
+plot_missing(dataset_raw)
+```
+
+There is one column with all missing values so we can remove this column and see more information about dataset without this column.
+Few columns have missing values. We should drop those columns, drop proper rows or impute data. 
+
+```{r remove missing}
+dataset <- dataset_raw %>% 
+  # drop 'TBG' and 'TBG_measured' - it is an empty column
+  select(-c(TBG, TBG_measured))
+plot_intro(dataset)
+```
+As we can see missing data are usually in the same rows. So dropping all columns is a bad idea.
+
+```{r plot continous, warning=FALSE}
+plot_histogram(dataset)
+plot_qq(dataset)
+plot_boxplot(dataset, by="Class")
+```
+There are some values that should be removed - especially age around 400. Also in TSH, FTI and TT4 we can try to remove few outliers and replace them as the mean value.
+Also it could be good to change TSH by appling logarithm since there are many values near 0 and outliers are only bigger than 0.
+
+```{r plot factor}
+plot_bar(dataset)
+```
+There are some columns with only few observation with one of the categories. Below are their number of occurence and how much it tell about sick class.
+
+```{r columns statistic}
+sum(dataset_raw$hypopituitary == "t")
+sum(dataset_raw$lithium == "t")
+sum(dataset_raw$goitre == "t")
+sum(dataset_raw$on_antithyroid_medication == "t")
+sum(dataset_raw$thyroid_surgery == "t")
+sum(dataset_raw$referral_source == "SVHD")
+sum(dataset_raw[dataset_raw$lithium == "t", "Class"] == "sick")
+sum(dataset_raw[dataset_raw$goitre == "t", "Class"] == "sick")
+sum(dataset_raw[dataset_raw$on_antithyroid_medication == "t", "Class"] == "sick")
+sum(dataset_raw[dataset_raw$thyroid_surgery == "t", "Class"] == "sick")
+sum(dataset_raw[dataset_raw$referral_source == "SVHD", "Class"] == "sick")
+```
+
+Based on additional data it can be good to remove hypopituitary, lithium, goitre, on_antithyroid_medication and thyroid_surgery columns because there are up to 53 occurences and only up to 2 sick people so those columns do not give any additional information but some algorithms can have problems with training models.
+
+# Preprocessing
+
+Because of first look for data we can remove values with probable mistakes during writing, then we can remove hypopituitary column. After that we can one hot encode categorical data to use in algorithms.
+
+```{r preprocessing}
+# remove too big values - many written by mistake
+dataset[dataset$age > 120 & (is.na(dataset$age) == FALSE), "age"] <- mean(dataset$age, na.rm = TRUE)
+dataset[dataset$TT4 > 300 & (is.na(dataset$TT4) == FALSE), "TT4"] <- mean(dataset$TT4, na.rm = TRUE)
+dataset[dataset$FTI > 250 & (is.na(dataset$FTI) == FALSE), "FTI"] <- mean(dataset$FTI, na.rm = TRUE)
+dataset[dataset$TSH > 100 & (is.na(dataset$TSH) == FALSE), "TSH"] <- mean(dataset$TSH, na.rm = TRUE)
+
+# drop column hypopituitary because there are very few values
+dataset <- dataset %>% 
+  select(-c(hypopituitary, lithium, goitre, on_antithyroid_medication, thyroid_surgery))
+
+# one_hot encoding
+target <- dataset$Class
+target <- data.frame(target = as.factor(as.numeric(target == "sick")))
+observed <- select(dataset, -Class)
+dummy <- dummyVars(" ~ .", observed)
+data_ohe <- data.frame(predict(dummy, newdata = observed))
+data_ohe <- data_ohe %>% select(-sex.M)
+dataset <- cbind(target, data_ohe)
+```
+
+Then we can impute data. We will use mice package and we try to do it 5 times. The algorithm do it iteratively so in every time the imputed data will be diffrent. Then we can check which imputation gives the best results.
+```{r missings, echo=T, results='hide', warning=F, error=F} 
+set.seed(1221)
+mice_imputes <- mice(data_ohe, m=5, maxit = 10)
+```
+
+```{r impute results}
+xyplot(mice_imputes, T4U~FTI | ifelse(sex.F==TRUE, "Female", "Male"), pch = 20, cex = 0.4)
+densityplot(mice_imputes)
+
+datasets <- list()
+for(i in 1:5) {
+  data <- complete(mice_imputes, i)
+  data <- cbind(target, data)
+  datasets[[i]] <- data
+}
+```
+As we can see on density plots imputed data are good only for half of columns. TT4, T4U and FTI are not imputed well.
+
+# Model testing
+
+Then we can test our model. We will test random forest - ranger and xgboost. We will try it on 24 prepared dataset in different ways. One dataset without anything, 5 datasets with data imputed by mice. Then two times more because in every dataset we will apply logarithm to TSH column.
+
+The best model will be with the biggest AUPRC measure. It is good measure for inbalanced target classes. In our case there are less than 10% of sick people so AUPRC is better measure than AUC.
+```{r test models, warning=F, echo=T, results='hide'} 
+# 80% train i 20% test data
+train_ind <- as.matrix(read.table("indeksy_treningowe.txt")[,2])
+test_ind <- setdiff(seq_len(nrow(dataset)), train_ind)
+
+# cross-validation
+create_task_log <- function(dataset_log, id) {
+  dataset_log$TSH <- log(dataset_log$TSH)
+  task_log <- TaskClassif$new(id=id, backend=dataset_log[train_ind, ], target="target", positive="1")
+  return(task_log)
+}
+task_base <- TaskClassif$new(id='basic', backend=dataset[train_ind, ], target="target", positive="1")
+task_log <- create_task_log(dataset, 'TSH_logarithm')
+
+imputed_tasks <- list()
+imputed_tasks_log <- list()
+for(i in 1:5) {
+  imputed_tasks[[i]] <- TaskClassif$new(id=paste0('imputed_data', as.character(i)), backend=datasets[[i]][train_ind, ], target="target", positive="1")
+  imputed_tasks_log[[i]] <- create_task_log(datasets[[i]], paste0('imputed_data_logarithm', as.character(i)))
+}
+
+tasks1 <- c(list(task_base, task_log), imputed_tasks, imputed_tasks_log)
+tasks2 <- c(imputed_tasks, imputed_tasks_log)
+
+learners <- c("classif.ranger", "classif.xgboost")
+learners <- lapply(learners, lrn, predict_type = "prob", predict_sets = c("train", "test"))
+
+resamplings <- rsmp("cv", folds=5)
+
+set.seed(1233)
+bmr1 <- benchmark(benchmark_grid(tasks1, learners[[2]], resamplings))
+bmr2 <- benchmark(benchmark_grid(tasks2, learners, resamplings))
+
+measures <- list(
+  msr("classif.auc", id = "auc_train", predict_sets = "train"),
+  msr("classif.auc", id = "auc_test"),
+  msr("classif.auprc", id = "auprc_train", predict_sets = "train"),
+  msr("classif.auprc", id = "auprc_test")
+)
+results1 <- bmr1$aggregate(measures)
+results2 <- bmr2$aggregate(measures)
+print_results <- function(results) {
+  results <- results[, c("task_id", "learner_id", "auc_test", "auprc_train", "auprc_test")]
+  results[order(-results$auprc_test),]
+}
+```
+```{r print results}
+print_results(results1)
+print_results(results2)
+```
+
+Better results are on basic dataset instead of any imputation. But generally ranger is better than xgboost. Unfortunately ranger does not support missing data. But the best result is with ranger on imputed_data3.
+
+# Final model
+
+Below there are written results of final model on test dataset. Also there is a plot of precision recall curve of this model.
+
+```{r seed, include=FALSE}
+set.seed(111)
+```
+
+```{r final model}
+final_dataset <- datasets[[3]]
+task_final <- TaskClassif$new(id='final', backend=final_dataset, target="target", positive="1")
+
+learner <- learners[[1]]
+learner$train(task_final, row_ids=train_ind)
+prediction <- learner$predict(task_final, row_ids=test_ind)
+print(prediction$score(msr("classif.auprc")))
+print(prediction$score(msr("classif.auc")))
+
+auprc::precision_recall_curve(prediction$data$prob[,"1"], prediction$data$tab$truth, "1")
+
+```

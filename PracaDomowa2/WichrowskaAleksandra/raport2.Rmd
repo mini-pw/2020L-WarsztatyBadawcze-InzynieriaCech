@@ -1,0 +1,302 @@
+---
+title: "Sick dataset analysis"
+author: "Aleksandra Wichrowska"
+output:  html_document
+---
+  
+```{r setup, include = FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+library(OpenML)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(visdat)
+library(naniar)
+library(DataExplorer)
+library(caret)
+library(PRROC)
+library(corrplot)
+library(glmnet)
+library(mlr)
+library(auprc)
+library(rpart)
+library(DMwR)
+```
+
+```{r data, include = FALSE}
+set.seed(10)
+
+# download data
+list_all_openml_dataset <- listOMLDataSets()
+
+#sick dataset
+openml_id <- 38 
+data_name <- list_all_openml_dataset[list_all_openml_dataset[,'data.id'] == openml_id,'name']
+
+dataset_openml <- getOMLDataSet(data.id = openml_id)
+dataset_raw <- dataset_openml$data
+target_column <- dataset_openml$target.features
+```
+
+Out task was analysing and training an explainable model on dataset 'sick'. It's a dataset taken from OpenML website. It contains data about patients with and without thyroid disease.
+We should also train some black box models and compare achieved results to our explainable model.
+
+Section 1,2 and 3 is my work for first task - training an explainable model.
+In section 4 there are results of training black box models.
+
+## 1.Preprocessing
+
+#### 1.1 Delete some columns
+
+First step in preprocessing will be deleting unnecessary columns:
+
+* TBG - only NA values
+
+* TBG-measured - only one value
+
+* hypopituitary - only one value in train
+
+
+```{r preprocessing, include = FALSE, echo=TRUE}
+
+dataset <- dataset_raw %>% 
+  select(-c(TBG, TBG_measured,hypopituitary))
+```
+
+
+#### 1.2 One hot encoding
+
+Next I will do one-hot-encoding of factors variables: referral_source and sex.
+
+```{r onehot, include=FALSE, echo=TRUE}
+dummy <- dummyVars(~referral_source , data = dataset)
+new_vars <- predict(dummy, dataset)
+dataset <- dataset %>% select(-referral_source)
+dataset <- cbind(dataset, new_vars)
+
+dataset <- dataset %>% select(-referral_source.other)
+
+dataset$sex <- as.numeric(dataset$sex == 'F') # sex variable to 0/1
+
+dataset$Class = as.factor(as.numeric(dataset$Class=='sick'))
+```
+
+
+#### 1.3 Correlation matrix
+
+Next look into correlation matrix. We can find two correlated variables: FTI_measured and T4U_measured.
+Correlation:
+``` {r delete_correlated, include=FALSE, echo=TRUE}
+cor(as.numeric(dataset$FTI_measured), as.numeric(dataset$T4U_measured))
+dataset <- dataset %>% select(-T4U_measured)
+```
+
+So I decided to delete one of them.
+
+
+#### 1.4 Split dataset
+
+Now we can split our dataset to train and test subsets (with `indeksy-trenignowe.txt` file)
+
+```{r split}
+split_index <- read.csv('indeksy_treningowe.txt', sep = ' ', row.names = 1, header = TRUE)$x
+sick_train <- dataset[split_index,]
+sick_test <- dataset[-split_index,]
+```
+
+After preprocessing we can start training first model.
+I will try model from `rpart` package - decision tree.
+
+## 2. Training
+
+I will use `mlr` library to train models, so let's make `auprc` measure to this package.
+```{r auprc}
+auprc <- mlr::makeMeasure(id = "auprc",
+                          minimize = FALSE,
+                          properties = c("classif", "prob"),
+                          fun = function(task, model, pred, feats, extra.args){
+                            probs <- getPredictionProbabilities(pred)
+                            fg <- probs[pred$data$truth == 1]
+                            bg <- probs[pred$data$truth == 0]
+                            pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+                            pr$auc.integral
+                          })
+```
+
+#### 2.1 Base rpart model
+
+Let's begin with training some base model - rpart with default parameters.
+
+```{r rpart, include=FALSE, echo=FALSE}
+task = makeClassifTask(data=sick_train, target="Class", positive="1")
+learner = makeLearner("classif.rpart", predict.type = "prob")
+r = resample(learner, task, cv5, list(mlr::auc, auprc))
+```
+```{r result1, include=TRUE}
+r$aggr
+```
+
+#### 2.2 Rpart after imputation
+
+
+In our dataset there are some missing values - in columns: T3, T4U, FTI, TSH, TT4, sex and age. We must deal with it.
+Let's do some imputation.
+
+For `sex` variable I impute value `F` with probability equal to female ratio.
+
+For `age` and other variable with missing values I impute mean of this variable in train dataset.
+
+In addition for `age` variable I detected some outliers (greater than `120`) and impute them with mean also.
+
+
+```{r impute, echo=FALSE }
+sick_test_na = sick_test
+sick_train_na = sick_train
+
+# sex variable
+prob_F = mean(sick_train$sex, na.rm=TRUE)
+sick_train$sex <- sick_train$sex %>% replace_na(as.numeric(runif(1)<prob_F))
+sick_test$sex <- sick_test$sex %>% replace_na(as.numeric(runif(1)<prob_F))
+
+
+# age variable
+sick_test$age[sick_test$age>120] = NA
+sick_train$age[sick_train$age>120] = NA
+
+sick_test$age <- sick_test$age %>% replace_na(mean(sick_train$age, na.rm = TRUE))  # first use mean of this column in sick_train 
+sick_train$age <- sick_train$age %>% replace_na(mean(sick_train$age, na.rm = TRUE)) # then impute na in sick_train
+
+# other variable with missing values
+
+columns_missing <- c('T3', 'T4U', 'TSH', 'TT4', 'age', 'FTI')
+for(col in columns_missing){
+  sick_test[,col] <- sick_test[,col] %>% replace_na(mean(sick_train[,col], na.rm = TRUE))  # first use mean of this column in sick_train 
+  sick_train[,col] <- sick_train[,col] %>% replace_na(mean(sick_train[,col], na.rm = TRUE)) # then impute na in sick_train
+}
+```
+
+```{r rpart2, echo=FALSE, include=FALSE}
+learner2 = makeLearner("classif.rpart", predict.type = "prob")
+r = resample(learner2, task, cv5, list(mlr::auc, auprc))
+```
+
+```{r result2, include=TRUE}
+r$aggr
+```
+
+After imputation we  have a better model performance. I tried also some other method of imputation like knnImputation but it doesn't work.
+
+#### 2.3 Rpart after hyperparameters tuning
+
+I tried also tuning of hyperparameters.
+```{r params,  echo=FALSE, include=FALSE}
+learner_rpart = makeLearner("classif.rpart", predict.type='prob')
+task_rpart = makeClassifTask(data=sick_train, target="Class", positive="1")
+parameters = makeParamSet(
+  makeIntegerParam("maxdepth", lower = 1, upper = 30),
+  makeIntegerParam("minsplit", lower = 1, upper = 30),
+  makeNumericParam("cp", lower = 0, upper = 1)
+)
+ctrl <-  makeTuneControlRandom(maxit = 100L)
+cv <-  makeResampleDesc("CV", iters = 5L)
+results <- tuneParams(learner_rpart, task = task_rpart, resampling = cv,  par.set = parameters, control = ctrl, measures = list(mlr::auc), show.info = FALSE)
+
+learner_rpart_tuned <- setHyperPars(learner_rpart, minsplit=results$x$minsplit, cp=results$x$cp, maxdepth=results$x$maxdepth)
+r = resample(learner_rpart_tuned, task, cv5, list(mlr::auc, auprc))
+```
+
+```{r result4, include=TRUE}
+r$aggr
+```
+
+
+## 3. Final model
+
+
+```{r test_final,  include=TRUE}
+task_rpart = makeClassifTask(data=sick_train, target="Class", positive="1")
+model_rpart <- train(learner_rpart_tuned, task_rpart)
+predict_rpart <- predict(model_rpart, newdata = sick_test)
+prob <- getPredictionProbabilities(predict_rpart)
+fg <- prob[sick_test[,"Class"] == 1]
+bg <-  prob[sick_test[,"Class"] == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(pr)
+pr$auc.integral
+
+```
+
+## 4. Black box model
+
+In the beginning I change factor variables to numeric because some black box model requires this (for example `xgboost`).
+
+```{r factor}
+sick_train[, sapply(sick_train, is.factor)] = sapply(sick_train[, sapply(sick_train, is.factor)], as.numeric)
+sick_test[, sapply(sick_test, is.factor)] = sapply(sick_test[, sapply(sick_test, is.factor)], as.numeric)
+sick_test$Class = as.factor(sick_test$Class - 1)
+sick_train$Class = as.factor(sick_train$Class - 1)
+```
+
+I tried three black box models with default parameters:
+
+* xgboost
+
+* svm
+
+* ranger (random forest)
+
+```{r test,  include=FALSE}
+task_xgboost = makeClassifTask(data=sick_train, target="Class", positive="1")
+learner_xgboost <-  makeLearner("classif.xgboost", predict.type='prob')
+r = resample(learner_xgboost, task_xgboost, cv5, list(mlr::auc, auprc))
+```
+Performance of xgboost model:
+```{r test-aggr, include=TRUE}
+r$aggr
+```
+
+```{r test2,  include=FALSE}
+task_svm = makeClassifTask(data=sick_train, target="Class", positive="1")
+learner_svm <-  makeLearner("classif.svm", predict.type='prob')
+r = resample(learner_svm, task_svm, cv5, list(mlr::auc, auprc))
+```
+Performance of svm model:
+
+```{r test2-aggr, include=TRUE}
+r$aggr
+```
+
+
+```{r test3,  include=FALSE}
+task_ranger = makeClassifTask(data=sick_train, target="Class", positive="1")
+learner_ranger <-  makeLearner("classif.ranger", predict.type='prob')
+r = resample(learner_ranger, task_ranger, cv5, list(mlr::auc, auprc))
+```
+Performance of ranger model:
+
+```{r test3-aggr, include=TRUE}
+r$aggr
+```
+
+Ranger model achieved best results - `0.95` auprc using 5-fold crossvalidation. For xgboost it was `0.89` auprc. 
+SVM model performed worse that previous models.
+So my final black box model is ranger.
+Let's check how it performs on the test dataset.
+
+```{r blackbox}
+model_ranger <- train(learner_ranger, task_svm)
+predict_ranger <- predict(model_ranger, newdata = sick_test)
+prob <- getPredictionProbabilities(predict_ranger)
+fg <- prob[sick_test[,"Class"] == 1]
+bg <-  prob[sick_test[,"Class"] == 0]
+
+pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+plot(pr)
+pr$auc.integral
+```
+Black box model is better that explainable model that I trained two weeks ago.
+
+black box model auprc: `0.91`
+
+explainable model auprc: `0.85`

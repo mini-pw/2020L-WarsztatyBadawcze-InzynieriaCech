@@ -1,0 +1,162 @@
+---
+title: "Sick dataset analysis"
+author: "Kacper Siemaszko"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', message = FALSE, warning = FALSE)
+set.seed(1)
+library(dplyr)
+library(data.table)
+library(mlr)
+library(caret)
+library(corrplot)
+library(mltools)
+library(MASS)
+library(DALEX)
+library(PRROC)
+library(arules)
+library(knitr)
+library(gridExtra)
+```
+
+# Foreword
+
+This homework is heavily based on the results from previous one, especially in terms of preprocessing. Even more, the task from this homework was already completed in the previous homework, because I've compared explainable models (glmnet and rpart) to a black-box random forest model (ranger), but I'll present the black-box results once again.
+
+```{r data, echo=FALSE, results='asis'}
+data <- read.csv(file = "./dataset_38_sick.csv")
+training_indices <- read.csv(file ="./indeksy_treningowe.txt", sep = " ")
+# kable(mlr::summarizeColumns(data)[,c("name","type","disp","nlevs")], caption = "Raw sick dataset" )
+```
+
+```{r raw_data_transformation, echo=FALSE, include=FALSE}
+transform.raw.to.numeric <- function(data) {
+  data$age <- as.numeric(data$age)
+  data$sex<-as.numeric(ifelse(data$sex == "?", 1, data$sex == "F"))
+  
+  data[,colnames(data)[c(3:16,17,19,21,23,25,27)]] <- as.numeric(data[,colnames(data)[c(3:16,17,19,21,23,25,28)]]=='t')
+  
+    data[,colnames(data)[c(18,20,22,24,26,28)]] <- lapply(data[,colnames(data)[c(18,20,22,24,26,28)]], function(x) as.numeric(ifelse(x == "?", NA, x)))
+    
+  one.hot.referral_source <- model.matrix(~0+data$referral_source)[,1:5]
+  colnames(one.hot.referral_source) <- c("referral_source_other", "referral_source_STMW","referral_source_SVHC","referral_source_SVHD","referral_source_SVI")
+  data[,colnames(one.hot.referral_source)] <- one.hot.referral_source
+  data[,!(colnames(data) %in% c("referral_source"))]
+}
+```
+
+```{r numeric_data, echo=FALSE, include=FALSE}
+numeric_data <- transform.raw.to.numeric(data)
+
+numeric_data <- numeric_data[,!(colnames(data) %in% c("TBG_measured","TBG","hypopituitary"))]
+
+train_data <- numeric_data[training_indices$x,]
+test_data <- numeric_data[-training_indices$x,]
+
+test_data2 <- train_data
+test_data2$Class <- as.numeric(test_data2$Class == "sick")
+
+train_data2 <- train_data
+train_data2$Class <- as.numeric(train_data2$Class == "sick")
+```
+
+# Experiment
+Main idea behind the experiment is preparing a benchmark black box model, to set ourselves **AUC** and **AUPRC** goal. My black box model of choice is **ranger**. Besides a black box, I'll be testing two interpretable machine learning models - **glmnet** and **rpart**. I chose **ranger** model because of a high number of binary variables in the dataset. To find a best set of hyperparameters I used model-based (Bayesian) optimization method.
+
+```{r models, echo=TRUE}
+ranger <- makeLearner("classif.ranger", id="ranger", predict.type = "prob", num.threads = 4,
+                      min.node.size = 2, sample.fraction=0.8, mtry=9, num.trees=500)
+glmnet <- makeLearner("classif.glmnet", id="glmnet", predict.type = "prob")
+rpart <- makeLearner("classif.rpart", id="rpart", predict.type = "prob")
+
+means.of.negatives <- lapply(train_data[train_data$Class=="negative",c("TSH","T3","TT4","T4U","FTI")], mean, na.rm = TRUE)
+
+impute.with.mean.of.negatives <- function(data) {
+  for (colname in c("TSH","T3","TT4","T4U","FTI")) {
+    data[is.na(data[,colname]),colname] <- means.of.negatives[colname]
+  }
+  data
+}
+```
+
+I'm using **mlr** package as my machine learning toolbox, and one of its pros is possibility to create custom measures. It will allow me to use **auprc** in **mlr::benchmark** and quickly compare many learners trained on different tasks.
+
+```{r auprc, echo=FALSE}
+auprcWrapper <- function(task, model, pred, feats, extra.args){
+  probs <- getPredictionProbabilities(pred)
+  fg <- probs[pred$data$truth == "sick"]
+  bg <- probs[pred$data$truth == "negative"]
+  pr <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+  pr$auc.integral
+}
+
+measure.auprc <- makeMeasure(id="auprc",minimize = FALSE, properties = c("classif","req.pred","req.truth","req.prob"), fun = auprcWrapper)
+
+```
+
+```{r explaining, echo=FALSE}
+impute.with.mean.of.negatives.train <- makeClassifTask("impute.with.mean.of.negatives.train", train_data %>% impute.with.mean.of.negatives, target = "Class", positive = "sick")
+
+impute.with.mean.of.negatives.test <- makeClassifTask("impute.with.mean.of.negatives.test",test_data %>% impute.with.mean.of.negatives, target = "Class", positive = "sick")
+
+dat <- train_data %>% impute.with.mean.of.negatives()
+
+explainer.ranger <- explain(mlr::train(ranger, impute.with.mean.of.negatives.train),
+                     data = dat, 
+                     y = as.numeric(train_data$Class == "sick"),
+                     label = "Ranger",
+                     type = "classification",
+                     predict_function = function(model, data) as.numeric(predict(model, makeClassifTask("x", data, target = "Class", positive = "sick"))$data$prob.sick))
+
+plot(variable_importance(explainer.ranger))
+```
+
+```{r final_model, echo=FALSE}
+final.model <- mlr::train(ranger, impute.with.mean.of.negatives.train)
+pred <- predict(final.model, impute.with.mean.of.negatives.test)
+final.auprc <- auprcWrapper(-1, -1, pred, -1, -1)
+final.auc <- measureAUC(pred$data$prob.sick,pred$data$truth,"negative","sick")
+```
+
+Final AUPRC on test dataset
+
+```{r final.auprc}
+final.auprc
+```
+
+
+Final AUC on test dataset
+```{r final.auc}
+final.auc
+```
+
+
+Sick -> Sick
+
+```{r sick.sick}
+sick.sick.idx <- pred$data[pred$data$truth=="sick" & pred$data$response=="sick",]$id[1]
+
+plot(variable_attribution(explainer.ranger, new_observation = test_data[sick.sick.idx,], type="break_down"))
+
+```
+
+Sick -> Negative
+
+```{r sick.neg}
+sick.neg.idx <- pred$data[pred$data$truth=="sick" & pred$data$response=="negative",]$id[1]
+
+plot(variable_attribution(explainer.ranger, new_observation = test_data[sick.neg.idx,], type="break_down"))
+
+```
+
+Sick -> Negative 2
+
+```{r sick.neg2}
+sick.neg2.idx <- pred$data[pred$data$truth=="sick" & pred$data$response=="negative",]$id[2]
+
+plot(variable_attribution(explainer.ranger, new_observation = test_data[sick.neg2.idx,], type="break_down"))
+
+```
